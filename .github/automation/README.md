@@ -288,12 +288,13 @@ PRs reach the full-build job.
 #### Hosted runner capacity
 
 Standard GitHub-hosted `ubuntu-latest` runners are **not sufficient** for a
-Chromium Android build. Measured twice on this repository's own `ubuntu-latest`
-runner in Actions (run `39997438713`, commit `dae5fb3`): 4 vCPUs, 15.6 GiB RAM,
-85.7 GiB free disk. That is 14.3 GiB short of Chromium's 100 GiB minimum, and
-the job also has a 6-hour wall-clock cap. The capacity preflight therefore fails
-before the source checkout. This is intentional: a forced build would exhaust
-the disk during `gclient sync` or `ninja`.
+Chromium Android build. Measured on four runs of this repository's own
+`ubuntu-latest` runner in Actions (`39997438713`, `40002419847`, `40003004400`,
+`40003563987`): 4 vCPUs, 15.6 GiB RAM, 85.6–85.7 GiB free disk. That is about
+14 GiB short of Chromium's 100 GiB minimum, and the job also has a 6-hour
+wall-clock cap. The capacity preflight therefore fails before the source
+checkout. This is intentional: a forced build would exhaust the disk during
+`gclient sync` or `ninja`.
 
 GitHub-hosted larger runners are the supported path. GitHub documents a 16-core
 larger runner as 16 vCPU / 64 GB RAM / 150 GB SSD, which satisfies both
@@ -370,6 +371,28 @@ needs the equivalent repo/actions scopes. If the token is absent, automation
 still works, but `GITHUB_TOKEN` pushes will not emit `pull_request` events; the
 workflow explicitly dispatches `validate-build.yml` and `ui-protection.yml`
 instead.
+
+#### Release signing state in this fork
+
+Configured on 2026-10-23 and proven by a real `release-build` job reaching the
+capacity preflight (run `40002419847`):
+
+- `RELEASE_KEYSTORE_B64` and `RELEASE_LOCAL_PROPERTIES_B64` in the `release`
+  environment; `RELEASE_CERT_SHA256` as a repository variable.
+- The keystore is a PKCS12 file generated in Android Studio, alias `key0`.
+  `KEYSTORE_TYPE` is left unset, so the default `PKCS12` applies.
+- The pinned certificate digest is the one `keytool -list` reports for that
+  alias, colon-stripped and lower-cased exactly as `release.yml` normalises it.
+- The passphrase never left the maintainer's machine: the seal-and-upload step
+  ran from a local terminal with `keytool`, and the workflow reads the secret
+  only inside the `release` environment.
+- `Validate release signing prerequisites` now passes, which is why the build
+  job reaches `Preflight build host` instead of aborting at the gate.
+
+Still outstanding for a signed release: a runner that meets the disk threshold
+(see "Hosted runner capacity"), required reviewers on `release` and
+`release-publish`, and an arm64 device serial for the smoke test that publishing
+requires.
 
 ### 5. Labels
 
@@ -490,17 +513,32 @@ Implemented in this repository and statically validated locally:
   `Validate release signing prerequisites` with three explicit annotations while
   still running the artifact upload and the failure-diagnostics step. Neither
   produced a partial artifact.
+- Run `40002419847` cleared the signing gate for the first time and reached
+  `Preflight build host`. It also exposed two defects, both fixed and re-run:
+  `Explain an insufficient hosted runner` used `if: steps.capacity.outcome ==
+  'failure'` with no status function, so Actions kept the implicit `success()`
+  and skipped the diagnosis exactly when it was needed (`failure() &&` added at
+  both call sites, proven by runs `40003004400` and `40003563987` rendering the
+  summary block and the `Insufficient runner capacity` annotation); and the
+  failure-diagnostics step wrapped `grep … | tail -n 20` in an `if`, which tests
+  `tail`'s status, so it warned about an OOM kill on every failed build even with
+  an empty kernel log. Runs `d9ded11`/`40003004400` showed the false warning and
+  `5132356`/`40003563987` showed it gone.
 
 Not executed in this environment:
 
 - Workflows have run on GitHub for lightweight validation. No full Chromium
   build, signed release build or device smoke test has run in Actions.
-- The standard hosted runner was measured at 85.8 GiB free disk, below the
-  100 GiB preflight threshold, so `release.yml` is expected to stop at the
-  capacity preflight until it runs on a larger GitHub-hosted runner or a
-  dedicated build host.
-- The environments, secrets, variables, labels and branch protection must be
-  configured in GitHub by a maintainer.
+- The standard hosted runner has been measured at 85.6–85.7 GiB free disk across
+  four runs, below the 100 GiB preflight threshold, so `release.yml` is expected
+  to stop at the capacity preflight until it runs on a larger GitHub-hosted
+  runner or a dedicated build host. RAM (15.6 GiB) and CPU (4) also stay below
+  the recommended 32 GiB / 16 cores.
+- In this fork the `release` signing material, the `RELEASE_CERT_SHA256` pin and
+  the `release`/`release-publish` environments exist (see "Release signing state
+  in this fork"). Environment **required reviewers**, the label set and branch
+  protection on `main` are still maintainer configuration and are not verified
+  from here.
 - Fork-specific customization rules must be reviewed by the fork owner; this
   checkout is the upstream repository and does not contain a separate custom UI
   tree beyond what `patch.sh`, `res/`, `fastlane/` and `extensions/` already
