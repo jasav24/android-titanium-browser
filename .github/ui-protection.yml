@@ -254,6 +254,7 @@ build:
     - "chromium-build"
   artifact_retention_days: 14
   min_free_disk_gib: 100
+  min_ram_gib: 8
   recommended_ram_gib: 32
   test_signing: "ephemeral"
 

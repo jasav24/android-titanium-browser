@@ -135,15 +135,26 @@ def main(argv: list[str] | None = None) -> int:
         for name in ("git", "python3", "bash", "ruby", "java", "curl")
     }
     min_disk = float(build.get("min_free_disk_gib", 100))
-    min_ram = float(build.get("recommended_ram_gib", 32))
-    if free_gib < min_disk:
+    min_ram = float(build.get("min_ram_gib", 8))
+    recommended_ram = float(build.get("recommended_ram_gib", 32))
+    disk_ok = free_gib >= min_disk
+    ram_ok = ram_gib is None or ram_gib >= min_ram
+    ram_recommended = ram_gib is None or ram_gib >= recommended_ram
+    if not disk_ok:
         message = (
-            f"free disk {free_gib} GiB is below the configured minimum {min_disk} GiB"
+            f"free disk {free_gib} GiB is below the Chromium minimum {min_disk} GiB"
         )
         (errors if args.build_host else warnings).append(message)
-    if ram_gib is not None and ram_gib < min_ram:
-        message = f"RAM {ram_gib} GiB is below the recommended {min_ram} GiB"
+    if not ram_ok:
+        message = (
+            f"RAM {ram_gib} GiB is below the Chromium minimum {min_ram} GiB"
+        )
         (errors if args.build_host else warnings).append(message)
+    elif not ram_recommended:
+        warnings.append(
+            f"RAM {ram_gib} GiB is below the recommended {recommended_ram} GiB; "
+            "the build may be slow or run out of memory"
+        )
     if args.build_host:
         for name in ("git", "python3", "bash", "java"):
             if not tools[name]:
@@ -155,6 +166,19 @@ def main(argv: list[str] | None = None) -> int:
             "this inspection host is not Linux; full Android builds must run on "
             "the configured Linux build runner."
         )
+
+    capacity = {
+        "cpu_count": os.cpu_count(),
+        "ram_gib": ram_gib,
+        "free_disk_gib": free_gib,
+        "min_free_disk_gib": min_disk,
+        "min_ram_gib": min_ram,
+        "recommended_ram_gib": recommended_ram,
+        "meets_disk_requirement": disk_ok,
+        "meets_ram_requirement": ram_ok,
+        "meets_recommended_ram": ram_recommended,
+        "build_ready": disk_ok and ram_ok and platform.system() == "Linux",
+    }
 
     workflows = sorted(
         path.name
@@ -207,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             "free_disk_gib": free_gib,
             "tools": tools,
         },
+        "capacity": capacity,
         "workflows": workflows,
         "errors": errors,
         "warnings": warnings,
@@ -227,9 +252,13 @@ def main(argv: list[str] | None = None) -> int:
         f"- patch.sh sections: {len(actual)} (manifest: {len(declared)})",
         f"- Path rules: {len(manifest['path_rules'])}",
         f"- Host: {platform.platform()}",
-        f"- Free disk: {free_gib} GiB (minimum {min_disk})",
+        f"- CPUs: {capacity['cpu_count']}",
+        f"- Free disk: {free_gib} GiB (minimum {min_disk}, "
+        f"{'ok' if disk_ok else 'INSUFFICIENT'})",
         f"- RAM: {ram_gib if ram_gib is not None else 'unknown'} GiB "
-        f"(recommended {min_ram})",
+        f"(minimum {min_ram}, recommended {recommended_ram}, "
+        f"{'ok' if ram_ok else 'INSUFFICIENT'})",
+        f"- Chromium build ready: **{capacity['build_ready']}**",
         "",
         "## patch.sh sections",
         "",
@@ -259,6 +288,12 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         for message in errors:
             print(f"ERROR: {message}", file=sys.stderr)
+        if not disk_ok:
+            print(
+                f"ERROR: resize the runner to at least {min_disk} GiB free disk "
+                "before starting a Chromium build; do not lower the threshold.",
+                file=sys.stderr,
+            )
         return 1
     return 0
 

@@ -99,29 +99,47 @@ def verify(
             fail(problems, f"artifact {name!r} has an invalid SHA-256")
         by_name[name] = entry
 
-    actual = {
-        path.name: path
+    actual_apks = sorted(
+        path
         for path in artifacts_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in (".apk", ".aab")
-    }
-    if not any(name.endswith(".apk") for name in actual):
-        fail(problems, "no APK was downloaded for publication")
-    if not any(name.endswith(".aab") for name in actual):
-        fail(problems, "no AAB was downloaded for publication")
+        if path.is_file() and path.suffix.lower() == ".apk"
+    )
+    actual_aabs = sorted(
+        path
+        for path in artifacts_dir.iterdir()
+        if path.is_file() and path.suffix.lower() == ".aab"
+    )
+    if actual_aabs:
+        fail(
+            problems,
+            "an AAB is present, but release publishing is APK-only: "
+            + ", ".join(path.name for path in actual_aabs),
+        )
+    for path in actual_apks:
+        if "arm64-v8a" not in path.name:
+            fail(
+                problems,
+                f"downloaded APK {path.name!r} is not an arm64-v8a build",
+            )
+    if len(actual_apks) != 1:
+        fail(
+            problems,
+            f"expected exactly one ARM64 APK for publication, found {len(actual_apks)}",
+        )
 
-    for name, path in sorted(actual.items()):
-        entry = by_name.get(name)
-        if entry is None:
-            fail(problems, f"downloaded artifact {name!r} is absent from the marker")
+    for path in actual_apks + actual_aabs:
+        if path.name not in by_name:
+            fail(problems, f"downloaded artifact {path.name!r} is absent from the marker")
+
+    for name, entry in sorted(by_name.items()):
+        path = artifacts_dir / name
+        if not path.is_file():
+            fail(problems, f"recorded artifact {name!r} was not downloaded")
             continue
         if path.stat().st_size != entry["size"]:
             fail(problems, f"size mismatch for {name!r}")
         if sha256(path) != entry["sha256"]:
             fail(problems, f"SHA-256 mismatch for {name!r}")
-
-    for name in sorted(by_name):
-        if name not in actual:
-            fail(problems, f"recorded artifact {name!r} was not downloaded")
 
     return problems
 
@@ -154,9 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         "commit": args.ref,
         "run_id": args.run_id,
         "artifacts": sorted(
-            path.name
-            for path in artifacts_dir.iterdir()
-            if path.is_file() and path.suffix.lower() in (".apk", ".aab")
+            path.name for path in artifacts_dir.iterdir() if path.is_file()
         ),
         "problems": problems,
         "verified": not problems,

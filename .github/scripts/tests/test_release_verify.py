@@ -26,15 +26,14 @@ class ReleaseVerifyTests(unittest.TestCase):
         self.artifacts = self.root / "artifacts"
         self.artifacts.mkdir()
         self.apk = self.artifacts / "titanium-arm64-v8a.apk"
-        self.aab = self.artifacts / "titanium-arm64-v8a.aab"
         self.apk.write_bytes(b"release apk bytes")
-        self.aab.write_bytes(b"release aab bytes")
         self.marker_path = self.root / "marker.json"
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def write_marker(self, **overrides: object) -> None:
+    def write_marker(self, files: list[Path] | None = None, **overrides: object) -> None:
+        files = files if files is not None else [self.apk]
         marker = {
             "schema_version": 1,
             "tree": TREE,
@@ -45,17 +44,12 @@ class ReleaseVerifyTests(unittest.TestCase):
             "run": {"id": RUN_ID, "repository": "owner/repo"},
             "artifacts": [
                 {
-                    "name": self.apk.name,
-                    "file": self.apk.name,
-                    "size": self.apk.stat().st_size,
-                    "sha256": digest(self.apk.read_bytes()),
-                },
-                {
-                    "name": self.aab.name,
-                    "file": self.aab.name,
-                    "size": self.aab.stat().st_size,
-                    "sha256": digest(self.aab.read_bytes()),
-                },
+                    "name": path.name,
+                    "file": path.name,
+                    "size": path.stat().st_size,
+                    "sha256": digest(path.read_bytes()),
+                }
+                for path in files
             ],
         }
         marker.update(overrides)
@@ -105,10 +99,9 @@ class ReleaseVerifyTests(unittest.TestCase):
         self.assertIn("not recorded from a release build", result.stderr)
 
     def test_asset_missing_from_marker_is_refused(self) -> None:
+        extra = self.artifacts / "extra-arm64-v8a.apk"
+        extra.write_bytes(b"unrecorded apk")
         self.write_marker()
-        marker = json.loads(self.marker_path.read_text(encoding="utf-8"))
-        marker["artifacts"] = marker["artifacts"][:1]
-        self.marker_path.write_text(json.dumps(marker), encoding="utf-8")
         result = self.run_verify()
         self.assertEqual(result.returncode, 1)
         self.assertIn("absent from the marker", result.stderr)
@@ -118,6 +111,32 @@ class ReleaseVerifyTests(unittest.TestCase):
         result = self.run_verify()
         self.assertEqual(result.returncode, 1)
         self.assertIn("different workflow run", result.stderr)
+
+    def test_aab_is_refused(self) -> None:
+        aab = self.artifacts / "titanium-arm64-v8a.aab"
+        aab.write_bytes(b"release aab bytes")
+        self.write_marker(files=[self.apk, aab])
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("APK-only", result.stderr)
+
+    def test_armv7_apk_is_refused(self) -> None:
+        self.apk.unlink()
+        armv7 = self.artifacts / "titanium-armeabi-v7a.apk"
+        armv7.write_bytes(b"armv7 apk")
+        self.write_marker(files=[armv7])
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not an arm64-v8a build", result.stderr)
+
+    def test_recorded_metadata_must_match_downloaded_bytes(self) -> None:
+        report = self.artifacts / "smoke-report.md"
+        report.write_text("Status: **passed**\n", encoding="utf-8")
+        self.write_marker(files=[self.apk, report])
+        report.write_text("Status: **failed**\n", encoding="utf-8")
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("SHA-256 mismatch for 'smoke-report.md'", result.stderr)
 
 
 if __name__ == "__main__":

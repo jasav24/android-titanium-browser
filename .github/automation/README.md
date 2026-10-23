@@ -19,7 +19,7 @@ without a successful signed build and a device smoke test.
 | `ui-protection.yml` | every pull request, manual | Classify the PR diff against the base-branch manifest and publish the `ui-protection` check on the head commit. |
 | `validate-build.yml` | every pull request, manual | Run static validation and build policy on every PR; run an exact-tree full Chromium build when required and approved. |
 | `upstream-review.yml` | PR close, `/automerge`, validation completion, manual | Record merged upstream SHAs durably and run the optional, fully gated auto-merge path. |
-| `release.yml` | manual only | Build, sign, verify, smoke-test and optionally publish a release from the current default-branch tip. |
+| `release.yml` | manual only | Build, sign, verify, smoke-test and optionally publish an ARM64 APK from the current default-branch tip on GitHub-hosted `ubuntu-latest`. |
 
 The workflows are in `.github/workflows/`; the Python and shell helpers are in
 `.github/scripts/`.
@@ -200,31 +200,45 @@ and anything requiring a build remain human-merged.
 
 ## Release flow
 
-`release.yml` is manual and defaults to **build only** (`publish: false`).
+`release.yml` is manual, targets GitHub-hosted `ubuntu-latest` only, and defaults
+to **build only** (`publish: false`).
 
+0. `preflight_only: true` runs only `hosted-runner-preflight`. It prints CPUs,
+   RAM and free disk, then enforces `build.min_free_disk_gib` and Chromium's
+   RAM minimum. Use it to test a runner without starting a multi-hour build.
 1. `plan` verifies the requested ref is exactly the default-branch tip, reads the
    four-part version from `vanadium/args.gn`, and refuses an existing tag or
    release.
-2. `build` runs on the self-hosted `chromium-build` runner behind the `release`
-   environment. It requires `RELEASE_KEYSTORE_B64` and
-   `RELEASE_LOCAL_PROPERTIES_B64`. `build.sh` receives them in the variable names
-   it already expects.
-3. Verification checks exactly one arm64 APK, one armv7 APK and one AAB; version
-   and package id; APK signatures and certificate consistency; optional
-   certificate pin `RELEASE_CERT_SHA256`; AAB signature; and SHA-256 sums.
-4. A mandatory device smoke test installs the arm64 APK, launches it, checks the
-   process and resumed activity, captures a screenshot and fails on a crash
-   buffer entry for the package. No attached arm64 device means no release.
-5. `record` writes a release build marker to the state branch.
-6. `publish` runs only when `publish: true`, behind `release-publish`. It
-   re-checks that the commit is still the default-branch tip and the tag/release
-   is still absent, verifies the downloaded checksums, confirms the manifest and
-   smoke-test result, and then requires the durable `builds/<tree>.json` release
-   marker to match the downloaded artifacts, commit, repository and run before
-   attesting provenance and creating a GitHub release (draft by default).
-   `verify_release_artifacts.py` checks the artifact set, sizes and SHA-256
-   values; an artifact that is missing, extra, truncated or altered fails the
-   publish job.
+2. `build` runs on `ubuntu-latest` behind the `release` environment and requires
+   `RELEASE_KEYSTORE_B64`, `RELEASE_LOCAL_PROPERTIES_B64` and the
+   `RELEASE_CERT_SHA256` repository variable. Before checkout it repeats the
+   capacity preflight, so an undersized runner fails in about a minute instead
+   of filling the disk. The build is ARM64-only: `build.sh` is invoked with
+   `BUILD_ABIS=arm64`, `BUILD_BUNDLE=false` and `SYMBOL_LEVEL=0`. Its defaults
+   remain arm + arm64 + AAB, which `validate-build.yml` still uses.
+3. Verification requires exactly one `*-arm64-v8a.apk`, rejects any ARMv7 APK or
+   AAB, and checks the version, package id, arm64 native code, signature and the
+   pinned certificate. A missing or mismatched `RELEASE_CERT_SHA256` fails the
+   build. `SHA256SUMS` is generated from the APK.
+4. The device smoke test is optional for the build. With an attached arm64
+   device it installs, launches and checks the package for crashes. Without a
+   device it records `status: skipped` and the reason in `smoke-report.md`,
+   emits a warning, and the build job still succeeds. The smoke test never fails
+   the build job; the publish gate enforces the result.
+5. `record` writes a release marker (`kind: release`, `signing: release`) for the
+   exact tree to the state branch, recording the APK and the metadata files.
+6. `publish` runs only when `publish: true`, behind `release-publish`, and only
+   after a successful build and record. The first step fails with the recorded
+   status and reason if the smoke test did not pass. It then re-checks that the
+   commit is still the default-branch tip and the tag/release is still absent,
+   verifies the downloaded bytes against `SHA256SUMS`, the release manifest and
+   the durable `builds/<tree>.json` marker, attests provenance, and creates a
+   GitHub release (draft by default). Release assets are exactly the ARM64 APK,
+   `SHA256SUMS`, `release-manifest.json` and `smoke-report.md`; the AAB, ARMv7
+   APK and screenshot are never published.
+   `verify_release_artifacts.py` requires exactly one ARM64 APK, rejects AABs
+   and non-arm64 APKs, and fails when an artifact is missing, extra, truncated
+   or altered.
 
 ## Setup
 
@@ -249,7 +263,13 @@ explicit rule gives a better reason and the correct build requirement.
 
 ### 2. Runner
 
-A full Chromium build needs a dedicated Linux x64 host. The default labels are:
+`release.yml` uses `runs-on: ubuntu-latest` directly. It does not read
+`build.runner_labels`, fall back to a self-hosted runner, or silently downgrade
+checks. `validate-build.yml` still uses the self-hosted labels below for PR
+builds.
+
+A full Chromium build needs a dedicated Linux x64 host. The labels for the PR
+build runner are:
 
 ```yaml
 self-hosted
@@ -259,11 +279,39 @@ chromium-build
 ```
 
 The preflight expects at least 100 GiB free disk (configured as
-`build.min_free_disk_gib`) and recommends 32 GiB RAM. Required tools: `git`,
-`python3`, `bash`, `java`; the build itself needs the Chromium toolchain and
-Android SDK dependencies that `build.sh` normally provisions. Do not run
-untrusted fork code on this host; only same-repository PRs reach the full-build
-job.
+`build.min_free_disk_gib`), requires at least 8 GiB RAM, and recommends 32 GiB.
+Required tools: `git`, `python3`, `bash`, `java`; the build itself needs the
+Chromium toolchain and Android SDK dependencies that `build.sh` normally
+provisions. Do not run untrusted fork code on this host; only same-repository
+PRs reach the full-build job.
+
+#### Hosted runner capacity
+
+Standard GitHub-hosted `ubuntu-latest` runners are **not sufficient** for a
+Chromium Android build. Measured on this repository's `ubuntu-latest` runner:
+4 vCPUs, 15.6 GiB RAM, 85.8 GiB free disk. That is 14 GiB short of Chromium's
+100 GiB minimum, and the job also has a 6-hour wall-clock cap. The capacity
+preflight therefore fails before the source checkout. This is intentional: a
+forced build would exhaust the disk during `gclient sync` or `ninja`.
+
+GitHub-hosted larger runners are the supported path. A 16-core larger runner
+provides a 150 GB SSD and 64 GB RAM, which satisfies both thresholds. To use
+one, change `runs-on: ubuntu-latest` in `release.yml` to the larger runner's
+label; no other workflow change is needed. Larger runners require GitHub
+Team/Enterprise billing. A dedicated Linux host with >= 100 GiB free disk is the
+alternative. Do not lower `build.min_free_disk_gib` to force a build on a
+standard hosted runner.
+
+Two further hosted limits apply even after the disk threshold is met: the
+6-hour job cap and the CPU count. A full arm64 Chromium build on 4 vCPUs will
+not finish within 6 hours; the 16-core larger runner is the practical minimum.
+`SYMBOL_LEVEL=0` is set for releases to cut build time and disk usage, but it
+does not make a 4-vCPU build fit the cap.
+
+No build cache is configured. A Chromium checkout plus `out/` is tens of GiB,
+far beyond GitHub's 10 GiB per-repository cache limit, and upstream does not
+enable `ccache`; caching `depot_tools` alone would save seconds on a multi-hour
+build. Ephemeral runners keep the release build reproducible from a clean tree.
 
 ### 3. Environments
 
@@ -272,7 +320,7 @@ Create these GitHub environments under **Settings > Environments**:
 | Environment | Used by | Recommended protection |
 | --- | --- | --- |
 | `chromium-build` | full test builds | Required reviewers; restrict to the build host; no release secrets. |
-| `release` | signed release build | Required reviewers; release signing secrets only. |
+| `release` | signed release build on `ubuntu-latest` | Required reviewers; release signing secrets only. |
 | `release-publish` | publishing | Required reviewers; limit to the default branch. |
 | `upstream-automerge` | optional auto-merge | Required reviewers; only if auto-merge is enabled. |
 
@@ -293,12 +341,18 @@ Secrets (repository or environment scope as appropriate):
 globally, so they are not exposed to test builds or PR jobs. The `chromium-build`
 environment deliberately has no release secrets.
 
+`sign_apk`/`sign_aab` open the keystore as **PKCS12**, which is what Android
+Studio's key wizard and modern `keytool` produce; `KEYSTORE_TYPE` in the release
+environment overrides it (set `JKS` only for a legacy keystore). The file name
+`keys/test.jks` inside the runner does not indicate the format.
+
 Variables:
 
 | Name | Required | Used for |
 | --- | --- | --- |
 | `UPSTREAM_AUTOMERGE_ENABLED` | only for auto-merge | Must be exactly `true`. |
-| `RELEASE_CERT_SHA256` | strongly recommended | Pins the expected APK signing certificate digest; a mismatch fails the release. |
+| `RELEASE_CERT_SHA256` | required for releases | Pins the expected APK signing certificate digest. A missing value or a mismatch fails the release build. |
+| `KEYSTORE_TYPE` | optional | Keystore format the release build opens; defaults to `PKCS12`. Set `JKS` only for a legacy keystore. |
 
 For `AUTOMATION_TOKEN`, use a fine-grained token limited to this repository with
 `contents: write`, `pull requests: write`, `issues: write` and `actions: write`
@@ -412,19 +466,26 @@ Implemented in this repository and statically validated locally:
 - Six workflows, the protection manifest, the classifier, sync/state/build/
   release/merge scripts, the change-report schema and this documentation.
 - Local static validation passes with 0 errors and 0 warnings.
-- The local test suite passes (53 tests at the last run) against temporary Git
+- The local test suite passes (56 tests at the last run) against temporary Git
   repositories; it includes conflict-abort, deterministic rerun, stale-candidate
   clearing, merged-SHA recording, no-common-ancestor refusal, merge-base diffing,
-  PR marker round-trips, release marker protection and artifact tampering.
+  PR marker round-trips, release marker protection, AAB/ARMv7 rejection and
+  artifact tampering.
 - The manifest matches all 23 `patch.sh` sections in the checked-out source.
+- `release.yml` is wired for GitHub-hosted `ubuntu-latest` with an ARM64-only
+  build, a mandatory certificate pin, an optional smoke test and a publish gate
+  that requires the smoke test to have passed.
 
 Not executed in this environment:
 
-- No workflow has run on GitHub; no branch, PR, state branch, artifact or
-  release has been created by this automation yet.
-- No full Chromium build, release build or device smoke test has been run here.
-- The self-hosted runner, environments, secrets, variables, labels and branch
-  protection must be configured in GitHub by a maintainer.
+- Workflows have run on GitHub for lightweight validation. No full Chromium
+  build, signed release build or device smoke test has run in Actions.
+- The standard hosted runner was measured at 85.8 GiB free disk, below the
+  100 GiB preflight threshold, so `release.yml` is expected to stop at the
+  capacity preflight until it runs on a larger GitHub-hosted runner or a
+  dedicated build host.
+- The environments, secrets, variables, labels and branch protection must be
+  configured in GitHub by a maintainer.
 - Fork-specific customization rules must be reviewed by the fork owner; this
   checkout is the upstream repository and does not contain a separate custom UI
   tree beyond what `patch.sh`, `res/`, `fastlane/` and `extensions/` already
