@@ -33,8 +33,19 @@ if [ -n "$SYMBOL_LEVEL" ]; then
     esac
 fi
 
+# Set SIGN_RELEASE=false on a machine that must never see the release keystore.
+# The output is then an unsigned APK named *-unsigned.apk, which is not a
+# release artifact and must be signed elsewhere before it can be installed.
+SIGN_RELEASE="${SIGN_RELEASE:-true}"
+case "$SIGN_RELEASE" in
+    true|false) ;;
+    *) echo "::error::SIGN_RELEASE must be true or false" >&2; exit 2 ;;
+esac
+
 trap 'rm -rf "$SCRIPT_DIR/keys"' EXIT
-set_keys
+if [ "$SIGN_RELEASE" = "true" ]; then
+    set_keys
+fi
 
 VERSION="$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn || true)"
 if [ -z "$VERSION" ]; then
@@ -147,15 +158,32 @@ done
 export PATH="$PWD/third_party/jdk/current/bin/:$PATH"
 export ANDROID_HOME="$PWD/third_party/android_sdk/public"
 
-for abi in $BUILD_ABIS; do
-    case "$abi" in
-        arm) suffix=armeabi-v7a ;;
-        arm64) suffix=arm64-v8a ;;
-    esac
-    sign_apk "out/tmp/${VERSION}-${suffix}.apk" "out/release/${VERSION}-${suffix}.apk"
-done
-if [ "$BUILD_BUNDLE" = "true" ]; then
-    sign_aab "out/tmp/${VERSION}-arm64-v8a.aab" "out/release/${VERSION}-arm64-v8a.aab"
+if [ "$SIGN_RELEASE" = "false" ]; then
+    for abi in $BUILD_ABIS; do
+        case "$abi" in
+            arm) suffix=armeabi-v7a ;;
+            arm64) suffix=arm64-v8a ;;
+        esac
+        cp "out/tmp/${VERSION}-${suffix}.apk" \
+            "out/release/${VERSION}-${suffix}-unsigned.apk"
+    done
+    if [ "$BUILD_BUNDLE" = "true" ]; then
+        cp "out/tmp/${VERSION}-arm64-v8a.aab" \
+            "out/release/${VERSION}-arm64-v8a-unsigned.aab"
+    fi
+    echo "::warning::SIGN_RELEASE=false: out/release holds UNSIGNED artifacts that are"
+    echo "::warning::neither installable nor releasable; sign them before use."
+else
+    for abi in $BUILD_ABIS; do
+        case "$abi" in
+            arm) suffix=armeabi-v7a ;;
+            arm64) suffix=arm64-v8a ;;
+        esac
+        sign_apk "out/tmp/${VERSION}-${suffix}.apk" "out/release/${VERSION}-${suffix}.apk"
+    done
+    if [ "$BUILD_BUNDLE" = "true" ]; then
+        sign_aab "out/tmp/${VERSION}-arm64-v8a.aab" "out/release/${VERSION}-arm64-v8a.aab"
+    fi
 fi
 
 echo "Built Chromium ${VERSION} for: ${BUILD_ABIS} (bundle=${BUILD_BUNDLE})"

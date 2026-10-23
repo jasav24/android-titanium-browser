@@ -357,6 +357,23 @@ build. Ephemeral runners keep the release build reproducible from a clean tree,
 at the cost of paying the full checkout on every run — the warm-tree speed above
 is a property of the self-hosted host, not something Actions can reproduce.
 
+#### Building on a machine that must not hold the keys
+
+`build.sh` accepts `SIGN_RELEASE=false` (default `true`, and the release workflow
+never sets it, so CI is unchanged). In that mode `set_keys` is never called — no
+keystore and no `local.properties` are ever written to disk — and the artifacts
+land in `out/release/` as `*-unsigned.apk` / `*-unsigned.aab`. An unsigned APK
+does not install, so the last step is `apksigner sign` on the maintainer's own
+machine with the same arguments `common.sh` uses, followed by the checks
+`release.yml` runs: `apksigner verify --print-certs` against
+`RELEASE_CERT_SHA256`, and `aapt dump badging` for the package id, `versionName`
+and `arm64-v8a` native code.
+
+This exists because a **self-hosted runner is not an option for a machine you do
+not control**: the `release` environment delivers the keystore to whatever host
+runs the job, so a rented or shared box would hold your signing private key for
+the length of the build.
+
 ### 3. Environments
 
 Create these GitHub environments under **Settings > Environments**:
