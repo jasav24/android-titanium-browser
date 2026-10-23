@@ -46,8 +46,10 @@ export VERSION
 CHROMIUM_SOURCE=https://chromium.googlesource.com/chromium/src.git # https://github.com/chromium/chromium.git
 export DEBIAN_FRONTEND=noninteractive
 
+# Ubuntu 24.04 (the ubuntu-latest image) has no python3-pillow package; the
+# Pillow binary package there is python3-pil.
 sudo apt-get update
-sudo apt-get install -y sudo lsb-release file nano git curl python3 python3-pillow imagemagick librsvg2-bin
+sudo apt-get install -y sudo lsb-release file nano git curl python3 python3-pil imagemagick librsvg2-bin
 sudo dpkg --add-architecture i386; sudo apt-get update; sudo apt-get install -y libgcc-s1:i386
 
 if [ ! -d depot_tools ]; then

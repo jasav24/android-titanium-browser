@@ -288,15 +288,17 @@ PRs reach the full-build job.
 #### Hosted runner capacity
 
 Standard GitHub-hosted `ubuntu-latest` runners are **not sufficient** for a
-Chromium Android build. Measured on this repository's `ubuntu-latest` runner:
-4 vCPUs, 15.6 GiB RAM, 85.8 GiB free disk. That is 14 GiB short of Chromium's
-100 GiB minimum, and the job also has a 6-hour wall-clock cap. The capacity
-preflight therefore fails before the source checkout. This is intentional: a
-forced build would exhaust the disk during `gclient sync` or `ninja`.
+Chromium Android build. Measured twice on this repository's own `ubuntu-latest`
+runner in Actions (run `39997438713`, commit `dae5fb3`): 4 vCPUs, 15.6 GiB RAM,
+85.7 GiB free disk. That is 14.3 GiB short of Chromium's 100 GiB minimum, and
+the job also has a 6-hour wall-clock cap. The capacity preflight therefore fails
+before the source checkout. This is intentional: a forced build would exhaust
+the disk during `gclient sync` or `ninja`.
 
-GitHub-hosted larger runners are the supported path. A 16-core larger runner
-provides a 150 GB SSD and 64 GB RAM, which satisfies both thresholds. To use
-one, change `runs-on: ubuntu-latest` in `release.yml` to the larger runner's
+GitHub-hosted larger runners are the supported path. GitHub documents a 16-core
+larger runner as 16 vCPU / 64 GB RAM / 150 GB SSD, which satisfies both
+thresholds (confirm the exact shape for your plan; it is not measured here). To
+use one, change `runs-on: ubuntu-latest` in `release.yml` to the larger runner's
 label; no other workflow change is needed. Larger runners require GitHub
 Team/Enterprise billing. A dedicated Linux host with >= 100 GiB free disk is the
 alternative. Do not lower `build.min_free_disk_gib` to force a build on a
@@ -307,6 +309,13 @@ Two further hosted limits apply even after the disk threshold is met: the
 not finish within 6 hours; the 16-core larger runner is the practical minimum.
 `SYMBOL_LEVEL=0` is set for releases to cut build time and disk usage, but it
 does not make a 4-vCPU build fit the cap.
+
+`build.sh` provisions its toolchain with `apt-get`. Ubuntu 24.04 (the
+`ubuntu-latest` image) has no `python3-pillow` package in `main` or `universe`;
+the Pillow binary package is `python3-pil`. Because `apt-get install` aborts
+without installing anything when a named package is missing, the old name would
+have failed the build before Chromium was fetched. Verified against the Ubuntu
+noble `main` and `universe` `Packages` indexes, not by guessing.
 
 No build cache is configured. A Chromium checkout plus `out/` is tens of GiB,
 far beyond GitHub's 10 GiB per-repository cache limit, and upstream does not
@@ -475,6 +484,12 @@ Implemented in this repository and statically validated locally:
 - `release.yml` is wired for GitHub-hosted `ubuntu-latest` with an ARM64-only
   build, a mandatory certificate pin, an optional smoke test and a publish gate
   that requires the smoke test to have passed.
+- Two failure paths are confirmed on real GitHub-hosted runners in this fork:
+  run `39997438713` (`preflight_only`) failed the disk gate in 15 s and skipped
+  every downstream job, and run `39998673492` failed at
+  `Validate release signing prerequisites` with three explicit annotations while
+  still running the artifact upload and the failure-diagnostics step. Neither
+  produced a partial artifact.
 
 Not executed in this environment:
 
