@@ -311,17 +311,51 @@ not finish within 6 hours; the 16-core larger runner is the practical minimum.
 `SYMBOL_LEVEL=0` is set for releases to cut build time and disk usage, but it
 does not make a 4-vCPU build fit the cap.
 
-`build.sh` provisions its toolchain with `apt-get`. Ubuntu 24.04 (the
-`ubuntu-latest` image) has no `python3-pillow` package in `main` or `universe`;
-the Pillow binary package is `python3-pil`. Because `apt-get install` aborts
-without installing anything when a named package is missing, the old name would
-have failed the build before Chromium was fetched. Verified against the Ubuntu
-noble `main` and `universe` `Packages` indexes, not by guessing.
+`build.sh` provisions its toolchain with `apt-get` and installs `python3-pil`,
+the real Pillow binary package. Upstream asks for `python3-pillow`, which noble
+does not ship as a package name but which `python3-pil` **Provides** as a virtual
+package, so that command succeeds too. An earlier revision of this document
+claimed the upstream name would abort the install; that was wrong — the check
+only matched `Package:` fields and ignored `Provides:`. Corrected against the
+noble `main` `Packages` index and against upstream's own log (see below).
+
+#### Why the upstream repository builds without errors
+
+Upstream `jqssun/android-titanium-browser` has one build workflow,
+`.github/workflows/build.yml`, and it does **not** run on GitHub-hosted runners:
+
+- `schedule: '0 0 */16 * *'` hardcodes `runs-on: self-hosted`; the
+  `workflow_dispatch` path takes a required `runner` input that defaults to
+  `self-hosted` (`ubuntu-latest` appears only as a comment).
+- Run `39690551390` (2026-10-21) executed on job runner
+  `github-runner-a7uwLNWJ33JdF`, labels `['self-hosted']`, workspace
+  `/_work/android-titanium-browser/android-titanium-browser`, on an Ubuntu 24.04
+  host (apt printed `python3-pil is already the newest version
+  (10.2.0-1ubuntu1.3)`). Its `Build` step took 2 h 03 m 15 s for the ARMv7 APK,
+  the ARM64 APK and the ARM64 AAB together.
+- 92 runs of that workflow exist; the four most recent (2026-10-14, 10-16, 10-17
+  and 10-21) all concluded `success`, each publishing ~332 MB arm64 and ~202 MB
+  armv7 APKs plus a ~145 MB AAB.
+
+That design has no capacity preflight, no signing-certificate pin, no ABI
+override and no `set -euo pipefail` in `build.sh`; signing keys are repository
+level secrets, and the third-party actions are referenced by moving tags
+(`actions/checkout@v5`, `softprops/action-gh-release@v2`,
+`actions/attest-build-provenance@v4`). It builds cleanly because the host is a
+**persistent, warm machine** that already contains `chromium/src` and `out/`:
+`git fetch --depth 1 <tag>` and `gclient sync` only apply the delta, which is why
+a two-ABI plus bundle build finishes in about two hours. A 2 h 03 m wall clock is
+not achievable from a clean checkout on any runner, and it is exactly what the
+100 GiB disk gate refuses to attempt on a hosted runner. In other words upstream
+avoids the failure by owning a big always-on machine, which this fork's
+"GitHub-hosted runners only" rule excludes.
 
 No build cache is configured. A Chromium checkout plus `out/` is tens of GiB,
 far beyond GitHub's 10 GiB per-repository cache limit, and upstream does not
 enable `ccache`; caching `depot_tools` alone would save seconds on a multi-hour
-build. Ephemeral runners keep the release build reproducible from a clean tree.
+build. Ephemeral runners keep the release build reproducible from a clean tree,
+at the cost of paying the full checkout on every run — the warm-tree speed above
+is a property of the self-hosted host, not something Actions can reproduce.
 
 ### 3. Environments
 
