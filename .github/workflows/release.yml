@@ -81,7 +81,7 @@ jobs:
             --output-dir "$GITHUB_WORKSPACE/preflight-report"
 
       - name: Explain an insufficient hosted runner
-        if: steps.capacity.outcome == 'failure'
+        if: failure() && steps.capacity.outcome == 'failure'
         run: |
           set -euo pipefail
           cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
@@ -256,7 +256,7 @@ jobs:
             --output-dir "$GITHUB_WORKSPACE/build-preflight"
 
       - name: Explain an insufficient hosted runner
-        if: steps.capacity.outcome == 'failure'
+        if: failure() && steps.capacity.outcome == 'failure'
         run: |
           set -euo pipefail
           cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
