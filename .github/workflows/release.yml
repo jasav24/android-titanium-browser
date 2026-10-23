@@ -600,7 +600,9 @@ jobs:
           if [ -d chromium ]; then
             du -sh chromium
           fi
-          if sudo dmesg 2>/dev/null | grep -iE 'out of memory|killed process' | tail -n 20; then
+          oom="$(sudo dmesg 2>/dev/null | grep -iE 'out of memory|killed process' || true)"
+          if [ -n "$oom" ]; then
+            printf '%s\n' "$oom" | tail -n 20
             echo "::warning::the kernel log reports memory pressure or an OOM kill"
           fi
           echo "Inspect the failed step above for the first error; later steps may have been skipped."
