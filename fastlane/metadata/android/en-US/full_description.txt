@@ -1,4 +1,4 @@
-A secure and fully open-source, Chromium-based web browser with support for extensions. Manifest V2 (MV2) extensions are supported. To maintain a fast and native experience for everyone, advanced features are modularized into Titanium Extension for Android.
+Flash Browser is a secure and fully open-source, Chromium-based web browser with support for extensions. Manifest V2 (MV2) extensions are supported. To maintain a fast and native experience for everyone, advanced features are modularized into Titanium Extension for Android.
 
 You can install extensions from the following sources:
 - Chrome Web Store (Recommended)
@@ -19,4 +19,4 @@ WebRTC IP Policy
 
 Titanium Extension for Android is also available at https://github.com/jqssun/android-titanium-extension
 
-Titanium Browser for Android is under the GPL-2.0 license at https://github.com/jqssun/android-titanium-browser
+Flash Browser for Android is a rebranded fork of Titanium Browser for Android, which is under the GPL-2.0 license at https://github.com/jqssun/android-titanium-browser

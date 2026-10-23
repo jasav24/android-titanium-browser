@@ -1,0 +1,359 @@
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Optional upstream branch, tag or commit (default: the configured upstream branch tip)"
+        required: false
+        type: string
+        default: ""
+      retry_pending:
+        description: "Retry commits currently marked pending or deferred"
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: "Plan only: do not push branches, open pull requests or save state"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automation-state-write
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.AUTOMATION_TOKEN || github.token }}
+      REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Read manifest policy
+        id: manifest
+        run: python3 .github/scripts/manifest_info.py
+
+      - name: Prepare durable state worktree
+        env:
+          STATE_BRANCH: ${{ steps.manifest.outputs.state_branch }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/state_branch.sh prepare \
+            "$RUNNER_TEMP/automation-state" \
+            "$STATE_BRANCH"
+
+      - name: Configure Git identity and push credentials
+        run: |
+          set -euo pipefail
+          git config user.name "titanium-automation"
+          git config user.email "automation-bot@users.noreply.github.com"
+          if [ -n "${AUTOMATION_TOKEN:-}" ]; then
+            # A user/app token is used so that branch pushes emit pull_request
+            # events and the normal validation workflows run. GITHUB_TOKEN
+            # pushes intentionally do not trigger workflows.
+            git config --local --unset-all http.https://github.com/.extraheader || true
+            gh auth setup-git
+            echo "Using AUTOMATION_TOKEN for pushes."
+          else
+            echo "::notice::AUTOMATION_TOKEN is not set; validation workflows will be dispatched explicitly."
+          fi
+
+      - name: Fetch upstream
+        id: upstream
+        env:
+          UPSTREAM_REPO: ${{ steps.manifest.outputs.upstream_repo }}
+          UPSTREAM_BRANCH: ${{ steps.manifest.outputs.upstream_branch }}
+          INPUT_TARGET: ${{ inputs.target }}
+          REVIEW_PREFIX: ${{ steps.manifest.outputs.review_branch }}
+        run: |
+          set -euo pipefail
+          upstream_url="https://github.com/${UPSTREAM_REPO}.git"
+          target_ref="$UPSTREAM_BRANCH"
+          if [ -n "${INPUT_TARGET:-}" ]; then
+            target_ref="$INPUT_TARGET"
+          fi
+          git fetch --no-tags --quiet "$upstream_url" "$target_ref"
+          target_sha="$(git rev-parse FETCH_HEAD)"
+          if ! printf '%s' "$target_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::could not resolve the upstream target to a commit"
+            exit 1
+          fi
+          {
+            echo "url=$upstream_url"
+            echo "target_sha=$target_sha"
+            echo "review_branch=${REVIEW_PREFIX}-${target_sha:0:12}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build sync plan
+        id: sync
+        env:
+          UPSTREAM_URL: ${{ steps.upstream.outputs.url }}
+          UPSTREAM_REPO: ${{ steps.manifest.outputs.upstream_repo }}
+          UPSTREAM_BRANCH: ${{ steps.manifest.outputs.upstream_branch }}
+          TARGET_SHA: ${{ steps.upstream.outputs.target_sha }}
+          CANDIDATE_BRANCH: ${{ steps.manifest.outputs.candidate_branch }}
+          REVIEW_BRANCH: ${{ steps.upstream.outputs.review_branch }}
+          STATE_BRANCH: ${{ steps.manifest.outputs.state_branch }}
+          RETRY_PENDING: ${{ inputs.retry_pending }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(
+            --repo "$GITHUB_WORKSPACE"
+            --upstream "$UPSTREAM_URL"
+            --upstream-ref "refs/heads/${UPSTREAM_BRANCH}"
+            --base HEAD
+            --target "$TARGET_SHA"
+            --state-file "$RUNNER_TEMP/automation-state/state.json"
+            --report-dir "$GITHUB_WORKSPACE/sync-report"
+            --candidate-branch "$CANDIDATE_BRANCH"
+            --review-branch "$REVIEW_BRANCH"
+            --upstream-name "$UPSTREAM_REPO"
+          )
+          if [ "${RETRY_PENDING:-false}" = "true" ]; then
+            args+=(--retry-pending)
+          fi
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python3 .github/scripts/sync_upstream.py "${args[@]}"
+
+      - name: Publish automation branches
+        id: branches
+        if: inputs.dry_run != true
+        env:
+          CANDIDATE_BRANCH: ${{ steps.manifest.outputs.candidate_branch }}
+          REVIEW_BRANCH: ${{ steps.upstream.outputs.review_branch }}
+          CANDIDATE_CREATED: ${{ steps.sync.outputs.candidate_created }}
+          REVIEW_CREATED: ${{ steps.sync.outputs.review_created }}
+        run: |
+          set -euo pipefail
+          push_branch() {
+            local branch="$1"
+            local local_sha remote_sha
+            local_sha="$(git rev-parse --verify "refs/heads/${branch}" 2>/dev/null || true)"
+            if [ -z "$local_sha" ]; then
+              echo "No local branch ${branch}; nothing to publish."
+              return 0
+            fi
+            remote_sha="$(git ls-remote --heads origin "refs/heads/${branch}" | awk '{print $1}')"
+            if [ "$remote_sha" = "$local_sha" ]; then
+              echo "${branch} is already up to date."
+              return 0
+            fi
+            git push \
+              --force-with-lease="refs/heads/${branch}:${remote_sha}" \
+              origin "refs/heads/${branch}:refs/heads/${branch}"
+          }
+          if [ "$CANDIDATE_CREATED" = "true" ]; then
+            push_branch "$CANDIDATE_BRANCH"
+          fi
+          if [ "$REVIEW_CREATED" = "true" ]; then
+            push_branch "$REVIEW_BRANCH"
+          fi
+
+      - name: Save durable state
+        if: inputs.dry_run != true
+        env:
+          STATE_BRANCH: ${{ steps.manifest.outputs.state_branch }}
+          STATE_CHANGED: ${{ steps.sync.outputs.state_changed }}
+          TARGET_SHA: ${{ steps.upstream.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$STATE_CHANGED" = "true" ]; then
+            bash .github/scripts/state_branch.sh save \
+              "$RUNNER_TEMP/automation-state" \
+              "$STATE_BRANCH" \
+              "sync: ${TARGET_SHA} (run ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT})"
+          else
+            echo "State is unchanged; no state commit is needed."
+          fi
+
+      - name: Ensure automation labels exist
+        if: inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          gh label create automation --color 0e8a16 \
+            --description "Managed by the upstream automation" --force >/dev/null 2>&1 || true
+          gh label create upstream-sync --color 1d76db \
+            --description "Upstream sync candidate" --force >/dev/null 2>&1 || true
+          gh label create upstream-review --color fbca04 \
+            --description "Upstream change requiring human integration" --force >/dev/null 2>&1 || true
+          gh label create needs-human-review --color b60205 \
+            --description "A human must review this change" --force >/dev/null 2>&1 || true
+          gh label create full-build --color 5319e7 \
+            --description "Request an exact-tree full Chromium build" --force >/dev/null 2>&1 || true
+          gh label create automation-automerge --color 6f42c1 \
+            --description "Maintainer request for gated auto-merge (must also be enabled by policy)" --force >/dev/null 2>&1 || true
+
+      - name: Open or update the candidate pull request
+        id: candidate_pr
+        if: inputs.dry_run != true
+        env:
+          CANDIDATE_BRANCH: ${{ steps.manifest.outputs.candidate_branch }}
+          CANDIDATE_CREATED: ${{ steps.sync.outputs.candidate_created }}
+          REQUIRES_FULL_BUILD: ${{ steps.sync.outputs.requires_full_build }}
+          TARGET_SHA: ${{ steps.upstream.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          branch="$CANDIDATE_BRANCH"
+          title="chore(upstream): candidate ${TARGET_SHA:0:12}"
+          number="$(gh pr list --repo "$REPO" --head "$branch" --state open \
+            --json number --jq '.[0].number // empty')"
+
+          if [ "$CANDIDATE_CREATED" != "true" ]; then
+            if [ -n "$number" ]; then
+              gh pr close "$number" --repo "$REPO" \
+                --comment "The candidate is now empty: every upstream commit it carried is already present or integrated. Closing the stale automation PR." || true
+            fi
+            if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1; then
+              git push origin --delete "$branch" || true
+            fi
+            echo "number=" >> "$GITHUB_OUTPUT"
+            echo "::notice::No candidate commits to propose."
+            exit 0
+          fi
+
+          body_file="$GITHUB_WORKSPACE/sync-report/candidate-pr.md"
+          if [ ! -f "$body_file" ]; then
+            echo "::error::sync_upstream.py reported a candidate but wrote no PR body"
+            exit 1
+          fi
+
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --repo "$REPO" --title "$title" --body-file "$body_file"
+          else
+            created_url="$(gh pr create --repo "$REPO" \
+              --base "$DEFAULT_BRANCH" \
+              --head "$branch" \
+              --title "$title" \
+              --body-file "$body_file")"
+            number="$(printf '%s\n' "$created_url" | grep -o '/pull/[0-9]*' | tail -n1 | cut -d/ -f3)"
+          fi
+          if ! printf '%s' "$number" | grep -Eq '^[0-9]+$'; then
+            echo "::error::could not determine the candidate pull request number"
+            exit 1
+          fi
+
+          gh pr edit "$number" --repo "$REPO" \
+            --add-label automation --add-label upstream-sync || true
+          if [ "$REQUIRES_FULL_BUILD" = "true" ]; then
+            gh pr edit "$number" --repo "$REPO" --add-label full-build || true
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the review pull request
+        id: review_pr
+        if: inputs.dry_run != true
+        env:
+          REVIEW_BRANCH: ${{ steps.upstream.outputs.review_branch }}
+          REVIEW_CREATED: ${{ steps.sync.outputs.review_created }}
+          TARGET_SHA: ${{ steps.upstream.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$REVIEW_CREATED" != "true" ]; then
+            echo "number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          body_file="$GITHUB_WORKSPACE/sync-report/review-pr.md"
+          if [ ! -f "$body_file" ]; then
+            echo "::error::sync_upstream.py reported a review but wrote no PR body"
+            exit 1
+          fi
+          title="chore(upstream): review report for ${TARGET_SHA:0:12}"
+          number="$(gh pr list --repo "$REPO" --head "$REVIEW_BRANCH" --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --repo "$REPO" --title "$title" --body-file "$body_file"
+          else
+            created_url="$(gh pr create --repo "$REPO" \
+              --base "$DEFAULT_BRANCH" \
+              --head "$REVIEW_BRANCH" \
+              --title "$title" \
+              --body-file "$body_file")"
+            number="$(printf '%s\n' "$created_url" | grep -o '/pull/[0-9]*' | tail -n1 | cut -d/ -f3)"
+          fi
+          if ! printf '%s' "$number" | grep -Eq '^[0-9]+$'; then
+            echo "::error::could not determine the review pull request number"
+            exit 1
+          fi
+          gh pr edit "$number" --repo "$REPO" \
+            --add-label automation --add-label upstream-review --add-label needs-human-review || true
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Queue validation for the new pull requests
+        if: inputs.dry_run != true
+        env:
+          CANDIDATE_PR: ${{ steps.candidate_pr.outputs.number }}
+          REVIEW_PR: ${{ steps.review_pr.outputs.number }}
+          REQUIRES_FULL_BUILD: ${{ steps.sync.outputs.requires_full_build }}
+        run: |
+          set -euo pipefail
+          if [ -n "${AUTOMATION_TOKEN:-}" ]; then
+            echo "AUTOMATION_TOKEN pushes trigger the normal pull_request workflows; not dispatching duplicates."
+            exit 0
+          fi
+          if [ -n "$CANDIDATE_PR" ]; then
+            mode="auto"
+            if [ "$REQUIRES_FULL_BUILD" = "true" ]; then
+              mode="full"
+            fi
+            gh workflow run validate-build.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+              -f pr_number="$CANDIDATE_PR" -f mode="$mode"
+            gh workflow run ui-protection.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+              -f pr_number="$CANDIDATE_PR"
+          fi
+          if [ -n "$REVIEW_PR" ]; then
+            gh workflow run validate-build.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+              -f pr_number="$REVIEW_PR" -f mode=lightweight
+            gh workflow run ui-protection.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+              -f pr_number="$REVIEW_PR"
+          fi
+
+      - name: Summarize
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Upstream sync run"
+            echo
+            echo "- Upstream target: \`${{ steps.upstream.outputs.target_sha }}\`"
+            echo "- Candidate PR: ${CANDIDATE_PR:+#$CANDIDATE_PR}"
+            echo "- Review PR: ${REVIEW_PR:+#$REVIEW_PR}"
+            echo "- Dry run: \`${{ inputs.dry_run || 'false' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f sync-report/change-report.md ]; then
+            cat sync-report/change-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          CANDIDATE_PR: ${{ steps.candidate_pr.outputs.number }}
+          REVIEW_PR: ${{ steps.review_pr.outputs.number }}
+
+      - name: Upload sync report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: upstream-sync-${{ github.run_id }}
+          path: sync-report/
+          if-no-files-found: warn
+          retention-days: 30

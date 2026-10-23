@@ -8,6 +8,26 @@ sed -i 's|<data android:mimeType="message/rfc822"/>|<data android:mimeType="mess
 sed -i '/com.google.ar.core.min_apk_version/d' third_party/arcore-android-sdk-client/AndroidManifest_basesplit.xml
 # sed -i 's|Google LLC|jqssun, Google LLC|' chrome/browser/ui/android/strings/android_chrome_strings.grd
 
+# brand: display name
+# Display-only rebranding to Flash Browser. Internal `titanium` paths, package
+# ids and class names are deliberately left unchanged so the build graph and
+# the bundled extension keep resolving. "Titanium Extension" is the name of the
+# separate upstream extension project, so it is preserved verbatim.
+brand_string_roots=(chrome components ui)
+find "${brand_string_roots[@]}" -type f \( -name '*.grd' -o -name '*.grdp' -o -name '*.xtb' \) -exec sed -i \
+  -e 's/Titanium Extension/__FLASH_EXTENSION_NAME__/g' \
+  -e 's/Titanium Browser/Flash Browser/g' \
+  -e 's/\bTitanium\b/Flash Browser/g' \
+  -e 's/__FLASH_EXTENSION_NAME__/Titanium Extension/g' {} +
+sed -i 's/\bTitanium\b/Flash Browser/g' chrome/android/java/res_titanium_base/values/channel_constants.xml
+
+# links: github in browser
+# When Chromium allows external navigation for http(s), a verified GitHub link
+# is handed to the installed GitHub app. Block only GitHub hosts here; other
+# sites, and Custom Tab auth result flows, keep their existing behavior.
+sed -i 's#return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#if (UrlUtilities.isHttpOrHttps(url) \&\& (url.getHost().equals("github.com") || url.getHost().endsWith(".github.com"))) return false;\n        return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java
+grep -qF 'url.getHost().endsWith(".github.com")' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java || { echo "links: patch did not apply; ExternalNavigationDelegateImpl changed upstream" >&2; exit 1; }
+
 cp -r $SCRIPT_DIR/extensions/dist titanium/
 cp $SCRIPT_DIR/extensions/stage_bundled_extensions.inc titanium/dist/
 sed -i 's|"//components/privacy_sandbox/privacy_sandbox_attestations/preload:privacy_sandbox_attestations_assets",|&"//titanium/dist:extension_assets",|' chrome/android/BUILD.gn

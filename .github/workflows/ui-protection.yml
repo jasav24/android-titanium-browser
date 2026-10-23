@@ -1,0 +1,177 @@
+name: UI protection
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to classify"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-protection-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ui-protection:
+    name: ui-protection-workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    steps:
+      - name: Resolve pull request
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            pr_number="$PR_NUMBER"
+            base_sha="$PR_BASE_SHA"
+            head_sha="$PR_HEAD_SHA"
+            pull_json="$(gh api "repos/${REPO}/pulls/${pr_number}")"
+          else
+            pr_number="$INPUT_PR"
+            if ! printf '%s' "$pr_number" | grep -Eq '^[0-9]+$'; then
+              echo "::error::pr_number must be numeric"
+              exit 1
+            fi
+            pull_json="$(gh api "repos/${REPO}/pulls/${pr_number}")"
+            base_sha="$(printf '%s' "$pull_json" | jq -r '.base.sha')"
+            head_sha="$(printf '%s' "$pull_json" | jq -r '.head.sha')"
+          fi
+
+          for value in "$base_sha" "$head_sha"; do
+            if ! printf '%s' "$value" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::could not resolve a full Git SHA (got: $value)"
+              exit 1
+            fi
+          done
+
+          head_repo="$(printf '%s' "$pull_json" | jq -r '.head.repo.full_name // ""')"
+          acknowledged="$(printf '%s' "$pull_json" | jq -r \
+            '[.labels[].name] | index("ui-protection:approved") != null')"
+          same_repo="false"
+          if [ "$head_repo" = "$REPO" ]; then
+            same_repo="true"
+          fi
+
+          {
+            echo "pr_number=$pr_number"
+            echo "base_sha=$base_sha"
+            echo "head_sha=$head_sha"
+            echo "acknowledged=$acknowledged"
+            echo "same_repo=$same_repo"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout base branch (trusted classifier and manifest)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ steps.resolve.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch pull request head
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/automation/pr-head"
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$HEAD_SHA"
+          fi
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          test "$(git rev-parse refs/remotes/automation/pr-head)" = "$HEAD_SHA" \
+            || echo "::warning::The PR head moved while this check was starting; judging the resolved SHA."
+
+      - name: Classify changes against the protection manifest
+        id: guard
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ steps.resolve.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          ACKNOWLEDGED: ${{ steps.resolve.outputs.acknowledged }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$ACKNOWLEDGED" = "true" ]; then
+            args+=(--acknowledged)
+          fi
+          python3 .github/scripts/ui_guard.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --report-dir "$GITHUB_WORKSPACE/ui-protection-report" \
+            "${args[@]}"
+
+      - name: Publish ui-protection check for the head commit
+        if: always() && steps.resolve.outputs.same_repo == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          GUARD_OUTCOME: ${{ steps.guard.outcome }}
+          DECISION: ${{ steps.guard.outputs.decision }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          report="$GITHUB_WORKSPACE/ui-protection-report/ui-protection.md"
+          if [ ! -f "$report" ]; then
+            {
+              echo "UI protection classification did not produce a report."
+              echo
+              echo "The classifier step concluded: \`${GUARD_OUTCOME}\`."
+            } > "$RUNNER_TEMP/ui-protection-fallback.md"
+            report="$RUNNER_TEMP/ui-protection-fallback.md"
+          fi
+          if [ "$GUARD_OUTCOME" = "success" ]; then
+            conclusion="success"
+            title="UI protection passed (${DECISION:-pass})"
+          else
+            conclusion="failure"
+            title="UI protection blocked or failed (${DECISION:-error})"
+          fi
+          python3 .github/scripts/post_check.py \
+            --repo "$REPO" \
+            --sha "$HEAD_SHA" \
+            --name ui-protection \
+            --conclusion "$conclusion" \
+            --title "$title" \
+            --summary-file "$report" \
+            --details-url "$RUN_URL"
+
+      - name: Upload UI protection report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ui-protection-${{ steps.resolve.outputs.pr_number }}-${{ github.run_id }}
+          path: ui-protection-report/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail when UI protection did not pass
+        if: steps.guard.outcome != 'success'
+        run: |
+          echo "::error::UI protection did not pass; see the ui-protection check on the head commit."
+          exit 1

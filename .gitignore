@@ -7,3 +7,7 @@ keys/
 
 *.aab
 *.apk
+
+__pycache__/
+*.py[cod]
+automation-validation.json

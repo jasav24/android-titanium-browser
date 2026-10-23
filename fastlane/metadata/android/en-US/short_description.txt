@@ -1,1 +1,1 @@
-Private, secure, open-source Chromium-based browser with support for extensions
+Flash Browser: private, secure, open-source Chromium browser with extensions

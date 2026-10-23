@@ -1,0 +1,269 @@
+# UI protection and upstream-integration policy for Flash Browser for Android
+# (a rebranded fork of Titanium Browser for Android).
+#
+# This manifest was derived from the actual repository contents, not from a
+# generic Android template. In this project the UI is not a directory of
+# source files: it is produced by sed edits in patch.sh applied to a Chromium
+# checkout, plus the branding assets in res/, fastlane/ and extensions/.
+# Therefore patch.sh is classified hunk-by-hunk by its `# ext: ...` /
+# `# desktop: ...` / `# dev: ...` section headers.
+#
+# protection values:
+#   protected  - custom UI/branding. Never overwritten automatically.
+#   review     - build, CI, legal or behavior with compatibility impact. A
+#                human must review, but it is not a protected UI surface.
+#   candidate  - safe to include in the automated candidate branch. The
+#                candidate still requires review; auto-merge is disabled by
+#                default (see policy.auto_merge).
+#   section    - only used for patch.sh; each hunk inherits its section rule.
+#
+# `requires_build: true` means an exact-tree full Chromium build marker is
+# required before merge (see .github/workflows/validate-build.yml).
+
+schema_version: 1
+
+upstream:
+  default_repo: "jqssun/android-titanium-browser"
+  default_branch: "main"
+
+policy:
+  default_path_protection: "review"
+  default_patch_protection: "review"
+  auto_merge: false
+  require_human_approval: true
+  state_branch: "automation/state"
+  candidate_branch: "automation/upstream-candidate"
+  review_branch: "automation/upstream-review"
+  max_history_entries: 100
+  max_commits_per_run: 200
+
+path_rules:
+  # --- Branding and user-visible assets -----------------------------------
+  - pattern: "res/**"
+    class: "protected"
+    protection: "protected"
+    requires_build: true
+    reason: "Flash Browser app icon, themed icon and icon generation script."
+
+  - pattern: "fastlane/**"
+    class: "protected"
+    protection: "protected"
+    requires_build: false
+    reason: "Play Store listing, screenshots and store-facing branding copy."
+
+  - pattern: "extensions/**"
+    class: "protected"
+    protection: "protected"
+    requires_build: true
+    reason: "Bundled Titanium extension packaging and staging code."
+
+  - pattern: "args.gn"
+    class: "protected"
+    protection: "protected"
+    requires_build: true
+    reason: "Product package id (io.github.jqssun.helium) and Chromium feature configuration."
+
+  # --- The sed-based UI/feature patch surface ----------------------------
+  - pattern: "patch.sh"
+    class: "patch"
+    protection: "section"
+    requires_build: true
+    reason: "All Chromium UI, feature and branding edits; classify each hunk by its section header."
+
+  # --- Build and release infrastructure ----------------------------------
+  - pattern: "build.sh"
+    class: "build"
+    protection: "review"
+    requires_build: true
+    reason: "Source checkout, patch application, signing and packaging pipeline."
+
+  - pattern: "common.sh"
+    class: "build"
+    protection: "review"
+    requires_build: true
+    reason: "Signing helpers and version comparison used by build.sh and patch.sh."
+
+  - pattern: ".gclient"
+    class: "build"
+    protection: "candidate"
+    requires_build: true
+    reason: "Chromium dependency/hook configuration; validated by a full build."
+
+  - pattern: ".gitmodules"
+    class: "security"
+    protection: "review"
+    requires_build: true
+    reason: "Submodule URL changes affect the source supply chain."
+
+  - pattern: ".github/ui-protection.yml"
+    class: "ci"
+    protection: "protected"
+    requires_build: false
+    reason: "The protection policy itself; a PR may not relax its own gate without an explicit acknowledgement."
+
+  - pattern: ".github/scripts/**"
+    class: "ci"
+    protection: "review"
+    requires_build: false
+    reason: "Automation classifiers; workflows execute the base-branch copy, not the PR copy."
+
+  - pattern: ".github/**"
+    class: "ci"
+    protection: "review"
+    requires_build: false
+    reason: "CI and automation security boundary; never auto-integrated."
+
+  # Upstream Chromium/Vanadium revision. Included in the candidate branch so
+  # the full build can validate it, but never auto-merged.
+  - pattern: "vanadium"
+    class: "dependency"
+    protection: "candidate"
+    requires_build: true
+    reason: "Pinned Vanadium tag/commit; a Chromium revision update."
+
+  # --- Documentation and metadata ----------------------------------------
+  - pattern: "README.md"
+    class: "docs"
+    protection: "candidate"
+    requires_build: false
+    reason: "Documentation only."
+
+  - pattern: "LICENSE"
+    class: "legal"
+    protection: "review"
+    requires_build: false
+    reason: "License changes require human/legal review."
+
+  - pattern: ".gitignore"
+    class: "docs"
+    protection: "candidate"
+    requires_build: false
+    reason: "Ignore rules only."
+
+  # Default deny: anything not listed above is review-only.
+  - pattern: "**"
+    class: "unknown"
+    protection: "review"
+    requires_build: true
+    reason: "Unclassified path; review rather than guess."
+
+patch_files:
+  - "patch.sh"
+
+# Protection per patch.sh section. The header is the exact text after `# `.
+# Unlabeled regions (the preamble before the first header) use
+# policy.default_patch_protection and always require review.
+patch_sections:
+  - header: "brand: display name"
+    protection: "protected"
+    reason: "Display-only Flash Browser rebranding of user-visible string resources."
+
+  - header: "links: github in browser"
+    protection: "protected"
+    reason: "Keeps github.com links in the browser instead of handing them to the installed GitHub app."
+
+  - header: "accessibility"
+    protection: "review"
+    reason: "Accessibility interaction changes; user-visible but not visual design."
+
+  - header: "dev"
+    protection: "protected"
+    reason: "Developer tools / Task Manager entries in the application menu."
+
+  - header: "dev: incognito"
+    protection: "review"
+    reason: "DevTools incognito wiring."
+
+  - header: "dev: viewport"
+    protection: "protected"
+    reason: "DevTools mobile viewport layout and stylesheet."
+
+  - header: "playback"
+    protection: "review"
+    reason: "Media playback policy."
+
+  - header: "ext: viewport"
+    protection: "protected"
+    reason: "chrome://extensions layout and card/toolbar CSS."
+
+  - header: "ext: mv2"
+    protection: "review"
+    reason: "Manifest V2 compatibility and webstore policy."
+
+  - header: "ext: off store"
+    protection: "review"
+    reason: "Off-store extension install policy and store domains."
+
+  - header: "ext: toolbar"
+    protection: "protected"
+    reason: "Extension button in the Android toolbar."
+
+  - header: "ext: popup"
+    protection: "protected"
+    reason: "Extension popup anchoring and layout."
+
+  - header: "ext: fullscreen"
+    protection: "protected"
+    reason: "Full-screen extension popup sizing."
+
+  - header: "ext: pin"
+    protection: "protected"
+    reason: "Extensions menu button visibility/pinning."
+
+  - header: "ext: incognito"
+    protection: "review"
+    reason: "Extension incognito and split-window behavior."
+
+  - header: "ext: priority"
+    protection: "review"
+    reason: "Extension process priority (performance, not layout)."
+
+  - header: "ext: settings"
+    protection: "review"
+    reason: "Extension settings API platform support."
+
+  - header: "ext: dialog"
+    protection: "protected"
+    reason: "Extension install dialog interaction."
+
+  - header: "ext: locale"
+    protection: "review"
+    reason: "Extension locale file loading."
+
+  - header: "ext: ntp"
+    protection: "protected"
+    reason: "New tab page behavior."
+
+  - header: "ext: app"
+    protection: "review"
+    reason: "Extension app API platform support."
+
+  - header: "desktop: omnibox"
+    protection: "protected"
+    reason: "Desktop-style omnibox behavior and navigation."
+
+  - header: "desktop: menu"
+    protection: "protected"
+    reason: "Application menu items and multi-window navigation."
+
+build:
+  runner_labels:
+    - "self-hosted"
+    - "linux"
+    - "x64"
+    - "chromium-build"
+  artifact_retention_days: 14
+  min_free_disk_gib: 100
+  recommended_ram_gib: 32
+  test_signing: "ephemeral"
+
+security_keywords:
+  - "cve"
+  - "security"
+  - "vulnerab"
+  - "exploit"
+  - "sandbox"
+  - "use-after-free"
+  - "uaf"
+  - "rce"
+  - "privilege escalation"

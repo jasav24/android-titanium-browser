@@ -1,19 +1,19 @@
-# Titanium Browser for Android
+# Flash Browser for Android
 
 [![Stars](https://img.shields.io/github/stars/jqssun/android-titanium-browser?label=Stars&logo=GitHub)](https://github.com/jqssun/android-titanium-browser)
 [![GitHub](https://img.shields.io/github/downloads/jqssun/android-titanium-browser/total?label=GitHub&logo=GitHub)](https://github.com/jqssun/android-titanium-browser/releases)
 [![license](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://github.com/jqssun/android-titanium-browser/blob/main/LICENSE)
-[![build](https://img.shields.io/github/actions/workflow/status/jqssun/android-titanium-browser/build.yml)](https://github.com/jqssun/android-titanium-browser/actions/workflows/build.yml)
+[![automation](https://img.shields.io/badge/automation-upstream%20sync%20%2B%20release-1d76db)](.github/automation/README.md)
 [![release](https://img.shields.io/github/v/release/jqssun/android-titanium-browser)](https://github.com/jqssun/android-titanium-browser/releases)
 
-A secure and fully open-source, Chromium-based web browser with support for extensions, based on [Vanadium](https://github.com/GrapheneOS/Vanadium) by [GrapheneOS](https://github.com/GrapheneOS). This project was formerly known as [Helium Browser for Android](https://github.com/jqssun/android-helium-browser) but was later renamed to avoid branding confusion. To maintain a fast and native experience for everyone, advanced features are modularized into [**Titanium Extension for Android**](https://github.com/jqssun/android-titanium-extension).
+Flash Browser is a rebranded fork of [**Titanium Browser for Android**](https://github.com/jqssun/android-titanium-browser), a secure and fully open-source, Chromium-based web browser with support for extensions. Titanium is based on [Vanadium](https://github.com/GrapheneOS/Vanadium) by [GrapheneOS](https://github.com/GrapheneOS). To maintain a fast and native experience for everyone, advanced features are modularized into [**Titanium Extension for Android**](https://github.com/jqssun/android-titanium-extension).
 
-For the latest builds, see [**Releases**](https://github.com/jqssun/android-titanium-browser/releases/latest). You can also update between GitHub and Google Play releases seamlessly.
+The upstream Titanium builds are published in the [**Titanium Releases**](https://github.com/jqssun/android-titanium-browser/releases/latest). Builds from this fork are produced by its own release workflow.
 
 [<img height="48" alt="Get it on Google Play" src="https://jqssun.github.io/images/badges/google-play-store.svg">](https://play.google.com/store/apps/details?id=io.github.jqssun.helium)
 [<img height="48" alt="Get it on GitHub" src="https://jqssun.github.io/images/badges/github.svg">](https://github.com/jqssun/android-titanium-browser/releases/latest)
 
-<img alt="Titanium Browser for Android" src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" />
+<img alt="Flash Browser for Android" src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" />
 
 ## Usage
 
@@ -45,7 +45,7 @@ The option is available by using the menu button <kbd>⋮</kbd> in the top right
 ## Implementation
 
 > [!WARNING]
-> [Titanium Browser for Android](#titanium-browser-for-android) only attempts to improve security and privacy where possible. For better protection on Android, you should instead use [GrapheneOS](https://grapheneos.org) with [Vanadium](https://vanadium.app), which additionally integrates patches into Android System WebView and provides significant kernel and memory management hardening on the OS level.
+> [Flash Browser for Android](#flash-browser-for-android) only attempts to improve security and privacy where possible. For better protection on Android, you should instead use [GrapheneOS](https://grapheneos.org) with [Vanadium](https://vanadium.app), which additionally integrates patches into Android System WebView and provides significant kernel and memory management hardening on the OS level.
 
 ```mermaid
 ---
@@ -63,7 +63,7 @@ flowchart TD
         n9["Generic Patches<small><br>patches/*.patch</small>"]
         n10["Subprojects Patches<small><br>subprojects_patches/**/*.patch</small>"]
   end
- subgraph s3["Titanium Browser for Android"]
+ subgraph s3["Flash Browser for Android"]
         n11["GN Build Configuration<small><br>args.gn</small>"]
         n12["Signed Release"]
   end
@@ -90,15 +90,27 @@ flowchart TD
 
 ## Building
 
-All releases are built using [Actions](https://github.com/jqssun/android-titanium-browser/actions). Current releases can also be attested using [GitHub CLI](https://github.com/cli/cli).
+Releases are built by the manual [**Release**](.github/workflows/release.yml)
+workflow. It builds the current default-branch tip with the release signing
+material, verifies the APK/AAB signatures, package id, version and checksums,
+runs a mandatory device smoke test, and creates a draft GitHub release. Nothing
+is published by default.
+
+Release signing material is supplied to the `release` environment as
+`RELEASE_KEYSTORE_B64` and `RELEASE_LOCAL_PROPERTIES_B64`; the archive is never
+committed to the repository. Runner labels, environments and the complete setup
+checklist are in [the automation guide](.github/automation/README.md#setup).
+
+Current releases can be attested using [GitHub CLI](https://github.com/cli/cli):
 
 ```shell
-gh attestation verify *.apk -R jqssun/android-titanium-browser
+gh attestation verify *.apk -R jasav24/android-titanium-browser
 ```
 
-This repository provides the build script to compile on the latest Ubuntu, and may also work with other Linux distributions.
-
-To build these releases yourself via CI (e.g. GitHub Actions), fork this repository. Supply your `base64` encoded `keystore.jks` and `local.properties` (containing `keyAlias`, `keyPassword` and `storePassword`) to [**Repository secrets**](https://github.com/jqssun/android-titanium-browser/blob/main/.github/workflows/build.yml#L49-L50) under **Settings** > **Secrets and variables** > **Actions**. To generate a release, go to **Actions**, select **Build**, and select **Run workflow**. Under **Runner**, you can either use a GitHub-hosted runner by entering `ubuntu-latest`, or `self-hosted` for your own hardware.
+This repository also provides `build.sh` to compile on Linux (the latest Ubuntu
+is the supported CI baseline). Upstream synchronization, protected-UI review,
+full-build gating and release/rollback procedures are documented in
+[`.github/automation/`](.github/automation/README.md).
 
 ## Credits
 

@@ -1,0 +1,615 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Expected Chromium version; must match vanadium/args.gn"
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: "Commit/tag to release; must be the tip of the default branch"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Create a GitHub release after a successful signed build and device smoke test"
+        required: false
+        type: boolean
+        default: false
+      draft:
+        description: "Create the release as a draft"
+        required: false
+        type: boolean
+        default: true
+      android_serial:
+        description: "Optional adb serial of the dedicated smoke-test device"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      runner_labels: ${{ steps.manifest.outputs.runner_labels }}
+      retention_days: ${{ steps.manifest.outputs.artifact_retention_days }}
+      state_branch: ${{ steps.manifest.outputs.state_branch }}
+    steps:
+      - name: Checkout default branch and submodules
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Read manifest policy
+        id: manifest
+        run: python3 .github/scripts/manifest_info.py
+
+      - name: Resolve the release commit and version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          tip="$(git rev-parse "refs/remotes/origin/${DEFAULT_BRANCH}")"
+          target="$tip"
+          if [ -n "${INPUT_REF:-}" ]; then
+            if git rev-parse --verify --quiet "${INPUT_REF}^{commit}" >/dev/null; then
+              target="$(git rev-parse "${INPUT_REF}^{commit}")"
+            else
+              if ! git fetch --no-tags --quiet origin "$INPUT_REF"; then
+                echo "::error::could not fetch release ref ${INPUT_REF}"
+                exit 1
+              fi
+              target="$(git rev-parse "FETCH_HEAD^{commit}")"
+            fi
+          fi
+          if [ "$target" != "$tip" ]; then
+            echo "::error::release ref ${INPUT_REF:-$DEFAULT_BRANCH} is ${target}, not the default branch tip ${tip}. Merge first."
+            exit 1
+          fi
+
+          version="$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::could not read a four-part version from vanadium/args.gn"
+            exit 1
+          fi
+          if [ -n "${INPUT_VERSION:-}" ] && [ "$INPUT_VERSION" != "$version" ]; then
+            echo "::error::requested version ${INPUT_VERSION} does not match ${version} in vanadium/args.gn"
+            exit 1
+          fi
+
+          tag="v${version}"
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null \
+             || gh api "repos/${REPO}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::tag ${tag} already exists"
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::a GitHub release for ${tag} already exists"
+            exit 1
+          fi
+
+          {
+            echo "sha=$target"
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "Planning release ${tag} at ${target}"
+
+  build:
+    name: release-build
+    needs: plan
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner_labels || '["self-hosted","linux","x64","chromium-build"]') }}
+    environment: release
+    timeout-minutes: 720
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      tree: ${{ steps.verify.outputs.tree }}
+      artifact_name: ${{ steps.verify.outputs.artifact_name }}
+      cert_sha256: ${{ steps.verify.outputs.cert_sha256 }}
+      smoke_passed: ${{ steps.smoke.outputs.passed }}
+    steps:
+      - name: Validate release signing prerequisites
+        env:
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          LOCAL_PROPERTIES_B64: ${{ secrets.RELEASE_LOCAL_PROPERTIES_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$LOCAL_PROPERTIES_B64" ]; then
+            echo "::error::The release environment must provide RELEASE_KEYSTORE_B64 and RELEASE_LOCAL_PROPERTIES_B64 (base64-encoded)."
+            exit 1
+          fi
+          echo "Release signing material is present."
+
+      - name: Checkout release commit and submodules
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 1
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Preflight build host
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/discover.py \
+            --build-host \
+            --repo "$GITHUB_WORKSPACE" \
+            --output-dir "$GITHUB_WORKSPACE/build-preflight"
+
+      - name: Build and sign APKs and AAB
+        timeout-minutes: 690
+        env:
+          LOCAL_TEST_JKS: ${{ secrets.RELEASE_LOCAL_PROPERTIES_B64 }}
+          STORE_TEST_JKS: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          chmod +x build.sh common.sh patch.sh
+          ./build.sh
+
+      - name: Verify signed artifacts
+        id: verify
+        env:
+          EXPECTED_VERSION: ${{ needs.plan.outputs.version }}
+          EXPECTED_CERT: ${{ vars.RELEASE_CERT_SHA256 }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apk64=(chromium/src/out/release/*-arm64-v8a.apk)
+          apk32=(chromium/src/out/release/*-armeabi-v7a.apk)
+          aab=(chromium/src/out/release/*-arm64-v8a.aab)
+          if [ ${#apk64[@]} -ne 1 ] || [ ${#apk32[@]} -ne 1 ] || [ ${#aab[@]} -ne 1 ]; then
+            echo "::error::expected exactly one arm64 APK, one armv7 APK and one AAB"
+            find chromium/src/out/release -maxdepth 1 -type f -printf '%f\n' || true
+            exit 1
+          fi
+          mkdir -p artifacts
+          cp "${apk64[0]}" "${apk32[0]}" "${aab[0]}" artifacts/
+
+          version="${apk64[0]##*/}"
+          version="${version%-arm64-v8a.apk}"
+          if [ "$version" != "$EXPECTED_VERSION" ]; then
+            echo "::error::built version ${version} does not match the plan ${EXPECTED_VERSION}"
+            exit 1
+          fi
+          tree="$(git rev-parse HEAD^{tree})"
+
+          build_tools="$(find chromium/src/third_party/android_sdk/public/build-tools \
+            -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)"
+          apksigner="$build_tools/apksigner"
+          if [ ! -x "$apksigner" ]; then
+            echo "::error::apksigner not found in ${build_tools}"
+            exit 1
+          fi
+          certs=()
+          for file in artifacts/*.apk; do
+            certs+=("$("$apksigner" verify --print-certs "$file" \
+              | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}' | tr -d ':' | tr 'A-F' 'a-f')")
+          done
+          cert_sha256="${certs[0]}"
+          for digest in "${certs[@]}"; do
+            if [ -z "$digest" ] || [ "$digest" != "$cert_sha256" ]; then
+              echo "::error::APK signing certificates differ or could not be read"
+              exit 1
+            fi
+          done
+          if [ -n "${EXPECTED_CERT:-}" ]; then
+            pinned="$(printf '%s' "$EXPECTED_CERT" | tr -d ':' | tr 'A-F' 'a-f')"
+            if [ "$pinned" != "$cert_sha256" ]; then
+              echo "::error::APK signing certificate does not match RELEASE_CERT_SHA256"
+              exit 1
+            fi
+          else
+            echo "::warning::RELEASE_CERT_SHA256 is not set; the signing certificate is not pinned to a known value."
+          fi
+
+          if [ -x "$build_tools/aapt" ]; then
+            dump_cmd=("$build_tools/aapt" dump badging)
+          else
+            dump_cmd=("$build_tools/aapt2" dump badging)
+          fi
+          badging="$("${dump_cmd[@]}" artifacts/*-arm64-v8a.apk)"
+          expected_pkg="$(grep -o 'chrome_public_manifest_package = "[^"]*"' args.gn \
+            | head -n1 | cut -d'"' -f2)"
+          if [ -z "$expected_pkg" ] || ! printf '%s' "$badging" | grep -q "package: name='${expected_pkg}'"; then
+            echo "::error::built APK package id does not match args.gn (${expected_pkg:-missing})"
+            exit 1
+          fi
+          if ! printf '%s' "$badging" | grep -q "versionName='${version}'"; then
+            echo "::error::built APK versionName does not match ${version}"
+            exit 1
+          fi
+          unzip -tq artifacts/*.aab >/dev/null
+
+          export PATH="$PWD/chromium/src/third_party/jdk/current/bin:$PATH"
+          if command -v keytool >/dev/null 2>&1; then
+            aab_cert="$(keytool -printcert -jarfile artifacts/*.aab 2>/dev/null \
+              | grep -m1 'SHA256:' | awk '{print $2}' | tr -d ':' | tr 'A-F' 'a-f')"
+            if [ -n "$aab_cert" ] && [ "$aab_cert" != "$cert_sha256" ]; then
+              echo "::error::AAB signing certificate differs from the APK certificate"
+              exit 1
+            fi
+          fi
+
+          (cd artifacts && sha256sum ./*.apk ./*.aab > SHA256SUMS)
+          {
+            echo "version=$version"
+            echo "tree=$tree"
+            echo "artifact_name=titanium-release-${version}-${tree:0:12}"
+            echo "cert_sha256=$cert_sha256"
+            echo "package_id=$expected_pkg"
+            echo "commit=$RELEASE_SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "Verified signed ${version} for tree ${tree}"
+
+      - name: Install and smoke test on a device
+        id: smoke
+        env:
+          ANDROID_SERIAL_INPUT: ${{ inputs.android_serial }}
+          PACKAGE_ID: ${{ steps.verify.outputs.package_id }}
+        run: |
+          set -euo pipefail
+          adb_bin="$PWD/chromium/src/third_party/android_sdk/public/platform-tools/adb"
+          if [ ! -x "$adb_bin" ]; then
+            echo "::error::adb not found at ${adb_bin}; the release host must provide the Chromium Android SDK."
+            exit 1
+          fi
+          if [ -n "${ANDROID_SERIAL_INPUT:-}" ]; then
+            export ANDROID_SERIAL="$ANDROID_SERIAL_INPUT"
+          fi
+          serial="$("$adb_bin" get-serialno 2>/dev/null || true)"
+          if [ -z "$serial" ] || [ "$serial" = "unknown" ]; then
+            echo "::error::no adb device is attached. A release cannot be published without a device smoke test; attach an arm64 device or run this on a dedicated release host."
+            "$adb_bin" devices -l || true
+            exit 1
+          fi
+          abi="$("$adb_bin" shell getprop ro.product.cpu.abi | tr -d '\r')"
+          sdk="$("$adb_bin" shell getprop ro.build.version.sdk | tr -d '\r')"
+          model="$("$adb_bin" shell getprop ro.product.model | tr -d '\r')"
+          fingerprint="$("$adb_bin" shell getprop ro.build.fingerprint | tr -d '\r')"
+          if ! printf '%s' "$abi" | grep -Eq '^arm64'; then
+            echo "::error::device ${serial} reports ABI ${abi}; the release APK is arm64-v8a. Attach an arm64 device."
+            exit 1
+          fi
+
+          "$adb_bin" install -r artifacts/*-arm64-v8a.apk
+          "$adb_bin" logcat -c || true
+          "$adb_bin" shell monkey -p "$PACKAGE_ID" -c android.intent.category.LAUNCHER 1
+          launched="false"
+          for attempt in $(seq 1 30); do
+            if "$adb_bin" shell pidof "$PACKAGE_ID" >/dev/null 2>&1; then
+              launched="true"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$launched" != "true" ]; then
+            echo "::error::the app process did not start within 60 seconds"
+            "$adb_bin" logcat -d -b crash -v brief | tail -n 200 || true
+            exit 1
+          fi
+          sleep 5
+          if ! "$adb_bin" shell dumpsys activity activities \
+              | grep -E 'mResumedActivity|topResumedActivity' | grep -q "$PACKAGE_ID"; then
+            echo "::warning::the app process is alive but not the resumed activity"
+          fi
+          "$adb_bin" exec-out screencap -p > smoke.png || true
+          "$adb_bin" logcat -d -b crash -v brief > "$RUNNER_TEMP/crash.log" || true
+          if grep -q "$PACKAGE_ID" "$RUNNER_TEMP/crash.log"; then
+            echo "::error::the app wrote a crash entry during the smoke test"
+            tail -n 200 "$RUNNER_TEMP/crash.log" || true
+            exit 1
+          fi
+          "$adb_bin" shell am force-stop "$PACKAGE_ID" || true
+
+          {
+            echo '# Device smoke test'
+            echo
+            printf -- '- Serial: `%s`\n' "$serial"
+            printf -- '- Model: `%s`\n' "$model"
+            printf -- '- ABI: `%s`\n' "$abi"
+            printf -- '- SDK: `%s`\n' "$sdk"
+            printf -- '- Fingerprint: `%s`\n' "$fingerprint"
+            printf -- '- Package: `%s`\n' "$PACKAGE_ID"
+            printf -- '- Launched: `%s`\n' "$launched"
+            printf -- '- Result: **%s**\n' "passed"
+          } > smoke-report.md
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+          echo "Device smoke test passed on ${model} (${abi}, SDK ${sdk})."
+
+      - name: Assemble release metadata
+        env:
+          VERSION: ${{ steps.verify.outputs.version }}
+          TREE: ${{ steps.verify.outputs.tree }}
+          COMMIT: ${{ steps.verify.outputs.commit }}
+          PACKAGE_ID: ${{ steps.verify.outputs.package_id }}
+          CERT_SHA256: ${{ steps.verify.outputs.cert_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp smoke.png artifacts/ 2>/dev/null || true
+          cp smoke-report.md artifacts/ 2>/dev/null || true
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          artifacts = Path("artifacts")
+          files = []
+          for path in sorted(artifacts.iterdir()):
+              if path.name in {"SHA256SUMS", "release-manifest.json"}:
+                  continue
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              files.append(
+                  {"name": path.name, "sha256": digest, "size": path.stat().st_size}
+              )
+          report = {
+              "schema_version": 1,
+              "version": os.environ["VERSION"],
+              "commit": os.environ["COMMIT"],
+              "tree": os.environ["TREE"],
+              "package_id": os.environ["PACKAGE_ID"],
+              "signing_certificate_sha256": os.environ["CERT_SHA256"],
+              "artifacts": files,
+              "smoke_test": {"passed": True, "report": "smoke-report.md"},
+              "built_at": datetime.now(timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z"),
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+          }
+          (artifacts / "release-manifest.json").write_text(
+              json.dumps(report, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.verify.outputs.artifact_name }}
+          path: |
+            artifacts/
+            build-preflight/
+          if-no-files-found: error
+          retention-days: ${{ needs.plan.outputs.retention_days || 14 }}
+
+  record:
+    name: record-release-build
+    needs:
+      - plan
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: automation-state-write
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout trusted automation scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Prepare durable state worktree
+        env:
+          STATE_BRANCH: ${{ needs.plan.outputs.state_branch }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/state_branch.sh prepare \
+            "$RUNNER_TEMP/automation-state" \
+            "$STATE_BRANCH"
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ github.workspace }}/downloaded
+
+      - name: Record the release build
+        env:
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+          TREE: ${{ needs.build.outputs.tree }}
+        run: |
+          set -euo pipefail
+          args=(
+            --state-dir "$RUNNER_TEMP/automation-state"
+            --tree "$TREE"
+            --ref "$RELEASE_SHA"
+            --kind release
+            --signing release
+            --repository "$REPO"
+            --run-url "$RUN_URL"
+            --result success
+          )
+          shopt -s nullglob
+          artifacts=("$GITHUB_WORKSPACE"/downloaded/artifacts/*.apk \
+                     "$GITHUB_WORKSPACE"/downloaded/artifacts/*.aab)
+          if [ ${#artifacts[@]} -eq 0 ]; then
+            echo "::error::no release artifacts were downloaded for recording"
+            exit 1
+          fi
+          for file in "${artifacts[@]}"; do
+            args+=(--artifact "$(basename "$file")=$file")
+          done
+          python3 .github/scripts/build_record.py "${args[@]}"
+
+      - name: Save durable state
+        env:
+          STATE_BRANCH: ${{ needs.plan.outputs.state_branch }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          TREE: ${{ needs.build.outputs.tree }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/state_branch.sh save \
+            "$RUNNER_TEMP/automation-state" \
+            "$STATE_BRANCH" \
+            "release: ${TAG} ${TREE} (run ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT})"
+
+  publish:
+    name: publish-release
+    needs:
+      - plan
+      - build
+      - record
+    if: inputs.publish == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release-publish
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Re-verify the release target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          tip="$(git rev-parse "refs/remotes/origin/${DEFAULT_BRANCH}")"
+          if [ "$RELEASE_SHA" != "$tip" ]; then
+            echo "::error::the release commit is no longer the tip of ${DEFAULT_BRANCH}; refusing to publish."
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null \
+             || gh api "repos/${REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::tag ${TAG} already exists"
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::release ${TAG} already exists"
+            exit 1
+          fi
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ github.workspace }}/downloaded
+
+      - name: Verify downloaded artifact integrity
+        env:
+          TREE: ${{ needs.build.outputs.tree }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd downloaded/artifacts
+          test -s SHA256SUMS
+          test -s release-manifest.json
+          test -s smoke-report.md
+          sha256sum -c SHA256SUMS
+          if [ "$(git -C "$GITHUB_WORKSPACE" rev-parse "${RELEASE_SHA}^{tree}")" != "$TREE" ]; then
+            echo "::error::recorded tree does not match the release commit"
+            exit 1
+          fi
+          jq -e --arg version "$VERSION" --arg tree "$TREE" --arg commit "$RELEASE_SHA" \
+            '.version == $version and .tree == $tree and .commit == $commit
+             and .smoke_test.passed == true' release-manifest.json >/dev/null
+          grep -Fq 'Result: **passed**' smoke-report.md
+          ls -l
+
+      - name: Verify the durable release marker
+        env:
+          STATE_BRANCH: ${{ needs.plan.outputs.state_branch }}
+          TREE: ${{ needs.build.outputs.tree }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/${STATE_BRANCH}:refs/remotes/automation-state"
+          marker_ref="refs/remotes/automation-state:builds/${TREE}.json"
+          if ! git cat-file -e "$marker_ref" 2>/dev/null; then
+            echo "::error::no recorded release build marker for tree ${TREE} on ${STATE_BRANCH}"
+            exit 1
+          fi
+          git show "$marker_ref" > "$RUNNER_TEMP/build-marker.json"
+          python3 .github/scripts/verify_release_artifacts.py \
+            --marker "$RUNNER_TEMP/build-marker.json" \
+            --artifacts "$GITHUB_WORKSPACE/downloaded/artifacts" \
+            --tree "$TREE" \
+            --ref "$RELEASE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$REPO"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e4d4f7c39adfa4c260fb5c147f0622000aa14b99 # v4.0.0
+        with:
+          subject-path: 'downloaded/artifacts/*'
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          artifacts="downloaded/artifacts"
+          args=(
+            --repo "$REPO"
+            --target "$RELEASE_SHA"
+            --title "Titanium ${VERSION}"
+            --generate-notes
+          )
+          if [ "$DRAFT" = "true" ]; then
+            args+=(--draft)
+          fi
+          assets=(
+            "$artifacts"/*.apk
+            "$artifacts"/*.aab
+            "$artifacts/SHA256SUMS"
+            "$artifacts/release-manifest.json"
+            "$artifacts/smoke-report.md"
+          )
+          if [ -f "$artifacts/smoke.png" ]; then
+            assets+=("$artifacts/smoke.png")
+          fi
+          gh release create "$TAG" "${args[@]}" "${assets[@]}"
+          echo "Release ${TAG} created for ${RELEASE_SHA}."

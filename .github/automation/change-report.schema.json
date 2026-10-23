@@ -1,0 +1,362 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jqssun/android-titanium-browser/.github/automation/change-report.schema.json",
+  "title": "Titanium upstream change report",
+  "description": "The machine-readable report written by .github/scripts/sync_upstream.py for every upstream sync run.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "run_id",
+    "upstream",
+    "base_sha",
+    "target_sha",
+    "result",
+    "candidate_branch",
+    "review_branch",
+    "manifest_schema",
+    "state_snapshot",
+    "scanned_commits",
+    "included_shas",
+    "pending_shas",
+    "already_present_shas",
+    "deferred_shas",
+    "requires_full_build",
+    "risk",
+    "automerge_eligible",
+    "candidate_created",
+    "review_created",
+    "truncated",
+    "warnings",
+    "next_steps"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "upstream": {
+      "type": "string"
+    },
+    "base_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "target_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "last_scanned_before": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result": {
+      "type": "string",
+      "enum": [
+        "clean",
+        "changes",
+        "no_new_commits"
+      ]
+    },
+    "candidate_branch": {
+      "type": "string"
+    },
+    "review_branch": {
+      "type": "string"
+    },
+    "manifest_schema": {
+      "type": "integer"
+    },
+    "state_snapshot": {
+      "type": "object",
+      "required": ["processed", "integrated", "pending", "deferred"],
+      "properties": {
+        "processed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "integrated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deferred": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "scanned_commits": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "included_shas": {
+      "$ref": "#/$defs/shaList"
+    },
+    "pending_shas": {
+      "$ref": "#/$defs/shaList"
+    },
+    "already_present_shas": {
+      "$ref": "#/$defs/shaList"
+    },
+    "carried_shas": {
+      "$ref": "#/$defs/shaList"
+    },
+    "deferred_shas": {
+      "$ref": "#/$defs/shaList"
+    },
+    "commits_included": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/classifiedCommit"
+      }
+    },
+    "commits_pending": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/classifiedCommit"
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sha", "subject", "reason"],
+        "properties": {
+          "sha": {
+            "$ref": "#/$defs/sha"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "requires_full_build": {
+      "type": "boolean"
+    },
+    "risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "automerge_eligible": {
+      "type": "boolean"
+    },
+    "candidate_created": {
+      "type": "boolean"
+    },
+    "review_created": {
+      "type": "boolean"
+    },
+    "candidate_state_cleared": {
+      "type": "boolean"
+    },
+    "review_file": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "shaList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sha"
+      },
+      "uniqueItems": true
+    },
+    "pathRule": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "protection": {
+          "type": "string",
+          "enum": ["protected", "review", "candidate", "section"]
+        },
+        "requires_build": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "classifiedCommit": {
+      "type": "object",
+      "required": [
+        "sha",
+        "subject",
+        "decision",
+        "risk",
+        "protection",
+        "classes",
+        "requires_build",
+        "security",
+        "files",
+        "patch_findings",
+        "reason"
+      ],
+      "properties": {
+        "sha": {
+          "$ref": "#/$defs/sha"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "committer_date": {
+          "type": "string"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sha"
+          }
+        },
+        "decision": {
+          "type": "string",
+          "enum": ["candidate", "review", "pending"]
+        },
+        "risk": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "protection": {
+          "type": "string",
+          "enum": ["protected", "review", "candidate", "section"]
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_build": {
+          "type": "boolean"
+        },
+        "security": {
+          "type": "boolean"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "old_path": {
+                "type": "string"
+              },
+              "protection": {
+                "type": "string"
+              },
+              "class": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "patch_findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "section": {
+                "type": ["string", "null"]
+              },
+              "protection": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "sample": {
+                "type": "string"
+              },
+              "commit": {
+                "$ref": "#/$defs/sha"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
