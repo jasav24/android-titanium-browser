@@ -59,6 +59,12 @@ jobs:
     name: hosted-runner-preflight
     if: inputs.preflight_only == true
     runs-on: ${{ inputs.runner_label != '' && inputs.runner_label || 'ubuntu-latest' }}
+    # Every step here is bash. Without this a Windows runner silently picks
+    # pwsh as the default shell, so the Linux guard below dies as a PowerShell
+    # parse error and never says why the host is wrong.
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 10
     permissions:
       contents: read
@@ -259,6 +265,9 @@ jobs:
     # preflight in this job runs either way, so a host that cannot build
     # Chromium fails early instead of mid-build.
     runs-on: ${{ fromJSON(needs.plan.outputs.runner_labels) }}
+    defaults:
+      run:
+        shell: bash
     environment: release
     timeout-minutes: 360
     permissions:
