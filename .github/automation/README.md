@@ -306,10 +306,23 @@ PRs reach the full-build job.
 **WSL2 cannot report its own free disk.** Inside a WSL2 distro, `df /` and
 Python's `shutil.disk_usage()` read the *virtual* size of the sparse VHDX. Run
 `40062219521` measured `952 GiB free` on a distro whose Windows volume held
-29.43 GiB. `discover.py --build-host` now detects the
-`microsoft-standard-WSL` kernel and reports the disk line as
-`UNVERIFIABLE on WSL2` instead of passing it, so a host that physically cannot
-hold the checkout fails the preflight rather than dying mid-build. Its RAM line
+29.43 GiB. `discover.py --build-host` therefore detects the
+`microsoft-standard-WSL` kernel and fails the preflight rather than trusting that
+number. The only honest measurement available from inside the distro is the
+Windows volume itself, which WSL exposes over 9p/drvfs at `/mnt/<letter>` where
+`statvfs` returns the host volume's real free space — exactly the room the VHDX
+can grow into. Only the Windows side knows which volume holds the VHDX, so the
+operator names it on the build host:
+
+```sh
+# in the runner's .env, then restart the service
+export TITANIUM_WSL_HOST_MOUNT=/mnt/d
+```
+
+The gate then reports `Free disk: … , ok, from host volume /mnt/d` and applies
+`build.min_free_disk_gib` to that figure. Without it — or if the named path is
+not a host-drive mount, so a tmpfs cannot rubber-stamp the check — the disk line
+stays unverifiable and the preflight fails with the message above. Its RAM line
 is trustworthy: `/proc/meminfo` cannot lie about a VM quota, and that same run
 correctly failed on `7.76 GiB` (WSL2 gives a distro 50 % of host RAM unless
 `.wslconfig` says otherwise).

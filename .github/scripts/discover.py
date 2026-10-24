@@ -66,8 +66,11 @@ def memory_gib() -> float | None:
     return None
 
 
+HOST_MOUNT_ENV = "TITANIUM_WSL_HOST_MOUNT"
+
+
 def wsl_virtual_disk() -> bool:
-    """True when running inside WSL2, where free disk cannot be trusted.
+    """True when running inside WSL2, where the distro root's free space lies.
 
     WSL2 mounts a sparse VHDX, so statvfs reports the virtual disk size (a
     terabyte by default) rather than the space actually left on the Windows
@@ -75,9 +78,39 @@ def wsl_virtual_disk() -> bool:
     dies partway through `gclient sync`. Probing by reserving `min_disk` bytes
     is not a fix either: the reservation is what grows the VHDX and it is not
     given back when the probe file is deleted, so the check would consume the
-    very space the build needs. Fail closed instead.
+    very space the build needs.
     """
     return "microsoft-standard-WSL" in platform.release()
+
+
+def host_volume_free_gib(mount: str) -> float | None:
+    """Free space on the Windows volume behind `mount`, or None if unproven.
+
+    WSL reaches each host volume over 9p/drvfs, and statvfs there reports that
+    volume's real free space, which is the room the VHDX can grow into. Only the
+    Windows side knows which volume holds the VHDX, so the operator names the
+    mount on the build host through ``HOST_MOUNT_ENV``; it is read from the
+    environment rather than the manifest because a workflow file comes from the
+    base branch and the host's environment cannot be set by a pull request.
+    Accepting only those filesystem types is what stops a tmpfs such as
+    /dev/shm from rubber-stamping the disk gate.
+    """
+    target = os.path.realpath(mount)
+    try:
+        lines = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3 or fields[1] != target:
+            continue
+        if not re.search(r"drvfs|9p|fuse", fields[2]):
+            return None
+        try:
+            return round(shutil.disk_usage(target).free / 1024**3, 1)
+        except OSError:
+            return None
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -152,15 +185,26 @@ def main(argv: list[str] | None = None) -> int:
     min_ram = float(build.get("min_ram_gib", 8))
     recommended_ram = float(build.get("recommended_ram_gib", 32))
     virtual_disk = wsl_virtual_disk()
-    disk_ok = free_gib >= min_disk and not virtual_disk
+    named_mount = os.environ.get(HOST_MOUNT_ENV, "").strip()
+    host_free_gib = (
+        host_volume_free_gib(named_mount) if virtual_disk and named_mount else None
+    )
+    disk_verifiable = not virtual_disk or host_free_gib is not None
+    if host_free_gib is not None:
+        # The build is bounded by the host volume, never by the VHDX virtual size.
+        free_gib = host_free_gib
+    disk_ok = free_gib >= min_disk and disk_verifiable
     ram_ok = ram_gib is None or ram_gib >= min_ram
     ram_recommended = ram_gib is None or ram_gib >= recommended_ram
-    if virtual_disk:
+    if virtual_disk and host_free_gib is None:
         message = (
             f"free disk is unverifiable on WSL2: {free_gib} GiB is the sparse VHDX "
-            "virtual size, not the space left on the Windows volume behind it. "
-            "Build on a native Linux host or a GitHub-hosted runner instead."
+            "virtual size, not the space left on the Windows volume behind it. Build "
+            f"on a native Linux host, or name that volume on this host with "
+            f"{HOST_MOUNT_ENV}=/mnt/<letter> so the gate can read its real free space"
         )
+        if named_mount:
+            message += f", which {named_mount} is not a mount of."
         (errors if args.build_host else warnings).append(message)
     elif not disk_ok:
         message = (
@@ -197,7 +241,12 @@ def main(argv: list[str] | None = None) -> int:
         "min_ram_gib": min_ram,
         "recommended_ram_gib": recommended_ram,
         "meets_disk_requirement": disk_ok,
-        "disk_verifiable": not virtual_disk,
+        "disk_verifiable": disk_verifiable,
+        "disk_source": (
+            f"host volume {named_mount}"
+            if host_free_gib is not None
+            else ("sparse VHDX virtual size" if virtual_disk else "filesystem")
+        ),
         "meets_ram_requirement": ram_ok,
         "meets_recommended_ram": ram_recommended,
         "build_ready": disk_ok and ram_ok and platform.system() == "Linux",
@@ -277,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         f"- Host: {platform.platform()}",
         f"- CPUs: {capacity['cpu_count']}",
         f"- Free disk: {free_gib} GiB (minimum {min_disk}, "
-        f"{'UNVERIFIABLE on WSL2' if virtual_disk else ('ok' if disk_ok else 'INSUFFICIENT')})",
+        f"{'ok' if disk_ok else 'INSUFFICIENT'}, from {capacity['disk_source']})",
         f"- RAM: {ram_gib if ram_gib is not None else 'unknown'} GiB "
         f"(minimum {min_ram}, recommended {recommended_ram}, "
         f"{'ok' if ram_ok else 'INSUFFICIENT'})",
@@ -311,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         for message in errors:
             print(f"ERROR: {message}", file=sys.stderr)
-        if not disk_ok:
+        if not disk_ok and not virtual_disk:
             print(
                 f"ERROR: resize the runner to at least {min_disk} GiB free disk "
                 "before starting a Chromium build; do not lower the threshold.",
