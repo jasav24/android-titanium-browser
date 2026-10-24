@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "tree": "94ba1d732876b04f5ef2efc6a19ce45802115ab3",
+  "commit": "20a7a374324b2a3fe0a230c3dba295b3bab165c0",
+  "result": "failure",
+  "kind": "test",
+  "signing": "ephemeral",
+  "recorded_at": "2026-10-24T06:54:52Z",
+  "run": {
+    "id": "40071755323",
+    "attempt": "1",
+    "url": "https://github.com/jasav24/android-titanium-browser/actions/runs/40071755323",
+    "repository": "jasav24/android-titanium-browser"
+  },
+  "artifacts": []
+}
