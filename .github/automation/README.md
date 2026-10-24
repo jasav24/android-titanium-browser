@@ -301,6 +301,33 @@ Chromium toolchain and Android SDK dependencies that `build.sh` normally
 provisions. Do not run untrusted fork code on this host; only same-repository
 PRs reach the full-build job.
 
+#### Self-hosted build hosts: two measured failure modes
+
+**WSL2 cannot report its own free disk.** Inside a WSL2 distro, `df /` and
+Python's `shutil.disk_usage()` read the *virtual* size of the sparse VHDX. Run
+`40062219521` measured `952 GiB free` on a distro whose Windows volume held
+29.43 GiB. `discover.py --build-host` now detects the
+`microsoft-standard-WSL` kernel and reports the disk line as
+`UNVERIFIABLE on WSL2` instead of passing it, so a host that physically cannot
+hold the checkout fails the preflight rather than dying mid-build. Its RAM line
+is trustworthy: `/proc/meminfo` cannot lie about a VM quota, and that same run
+correctly failed on `7.76 GiB` (WSL2 gives a distro 50 % of host RAM unless
+`.wslconfig` says otherwise).
+
+**`gclient runhooks` hides git's refusal reason.** The
+`apply_subprojects_patches` hook runs `git am` inside `src/v8` and
+`src/third_party/search_engines_data/resources` and builds its report from the
+first line of git's **stdout**. When git refuses to start — no committer
+identity for that repository, or a checkout owned by a different user — it
+exits before printing `Applying:`, so stdout is empty and the hook dies as
+`IndexError: list index out of range` while the real message, written to
+stderr, is discarded. Verified locally with git: the identity case prints
+nothing at all on stdout. `build.sh` therefore sets the committer identity with
+`--global`; a repo-local setting only ever covered `src`, which is why the same
+run applied the whole Vanadium series to `src` and then crashed on the first
+nested repository. GitHub-hosted runners ship a global identity, so only
+self-hosted hosts showed this.
+
 #### Hosted runner capacity
 
 Standard GitHub-hosted `ubuntu-latest` runners are **not sufficient** for a
