@@ -30,6 +30,14 @@ on:
           - lightweight
           - full
         default: auto
+      build_profile:
+        description: "arm64-only is one APK and fits a 4-core host inside the build timeout"
+        required: false
+        type: choice
+        options:
+          - arm64-only
+          - full
+        default: arm64-only
 
 permissions:
   contents: read
@@ -53,6 +61,8 @@ jobs:
       same_repo: ${{ steps.resolve.outputs.same_repo }}
       full_requested: ${{ steps.resolve.outputs.full_requested }}
       mode: ${{ steps.resolve.outputs.mode }}
+      build_abis: ${{ steps.resolve.outputs.build_abis }}
+      build_bundle: ${{ steps.resolve.outputs.build_bundle }}
       runner_labels: ${{ steps.manifest.outputs.runner_labels }}
       retention_days: ${{ steps.manifest.outputs.artifact_retention_days }}
       state_branch: ${{ steps.manifest.outputs.state_branch }}
@@ -73,6 +83,7 @@ jobs:
           INPUT_PR: ${{ inputs.pr_number }}
           INPUT_REF: ${{ inputs.ref }}
           INPUT_MODE: ${{ inputs.mode }}
+          INPUT_BUILD_PROFILE: ${{ inputs.build_profile }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -87,6 +98,22 @@ jobs:
           full_requested="false"
           mode="auto"
           scripts_sha="$(git rev-parse HEAD)"
+
+          # A dispatched build chooses its artifact set; every other trigger keeps
+          # the historical full matrix so a PR gate is not silently narrowed.
+          build_abis="arm arm64"
+          build_bundle="true"
+          case "${INPUT_BUILD_PROFILE:-full}" in
+            arm64-only)
+              build_abis="arm64"
+              build_bundle="false"
+              ;;
+            full) ;;
+            *)
+              echo "::error::unknown build_profile: ${INPUT_BUILD_PROFILE}"
+              exit 1
+              ;;
+          esac
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
             head="$PR_HEAD_SHA"
@@ -143,6 +170,8 @@ jobs:
             echo "same_repo=$same_repo"
             echo "full_requested=$full_requested"
             echo "mode=$mode"
+            echo "build_abis=$build_abis"
+            echo "build_bundle=$build_bundle"
           } >> "$GITHUB_OUTPUT"
 
       - name: Read manifest policy
@@ -345,6 +374,9 @@ jobs:
     timeout-minutes: 720
     permissions:
       contents: read
+    env:
+      BUILD_ABIS: ${{ needs.plan.outputs.build_abis }}
+      BUILD_BUNDLE: ${{ needs.plan.outputs.build_bundle }}
     outputs:
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
       version: ${{ steps.meta.outputs.version }}
@@ -396,6 +428,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x build.sh common.sh patch.sh
+          echo "Building ABIs: ${BUILD_ABIS} (bundle=${BUILD_BUNDLE})"
           ./build.sh
 
       - name: Verify and stage artifacts
@@ -406,13 +439,27 @@ jobs:
           apk64=(chromium/src/out/release/*-arm64-v8a.apk)
           apk32=(chromium/src/out/release/*-armeabi-v7a.apk)
           aab=(chromium/src/out/release/*-arm64-v8a.aab)
-          if [ ${#apk64[@]} -ne 1 ] || [ ${#apk32[@]} -ne 1 ] || [ ${#aab[@]} -ne 1 ]; then
-            echo "::error::expected exactly one arm64 APK, one armv7 APK and one AAB"
+          want_arm=false
+          case " ${BUILD_ABIS} " in *" arm "*) want_arm=true ;; esac
+          problems=""
+          if [ ${#apk64[@]} -ne 1 ]; then
+            problems="${problems} arm64 APK: found ${#apk64[@]}, want 1"
+          fi
+          if [ "$want_arm" = true ] && [ ${#apk32[@]} -ne 1 ]; then
+            problems="${problems} armv7 APK: found ${#apk32[@]}, want 1"
+          fi
+          if [ "${BUILD_BUNDLE}" = true ] && [ ${#aab[@]} -ne 1 ]; then
+            problems="${problems} AAB: found ${#aab[@]}, want 1"
+          fi
+          if [ -n "$problems" ]; then
+            echo "::error::artifact set does not match BUILD_ABIS='${BUILD_ABIS}' BUILD_BUNDLE='${BUILD_BUNDLE}':${problems}"
             find chromium/src/out/release -maxdepth 1 -type f -printf '%f\n' || true
             exit 1
           fi
           mkdir -p artifacts
-          cp "${apk64[0]}" "${apk32[0]}" "${aab[0]}" artifacts/
+          cp "${apk64[0]}" artifacts/
+          if [ ${#apk32[@]} -eq 1 ]; then cp "${apk32[0]}" artifacts/; fi
+          if [ ${#aab[@]} -eq 1 ]; then cp "${aab[0]}" artifacts/; fi
 
           version="${apk64[0]##*/}"
           version="${version%-arm64-v8a.apk}"
@@ -443,9 +490,11 @@ jobs:
             echo "::error::built APK package id does not match args.gn (${expected:-missing})"
             exit 1
           fi
-          unzip -tq artifacts/*.aab >/dev/null
+          if [ ${#aab[@]} -eq 1 ]; then
+            unzip -tq artifacts/*.aab >/dev/null
+          fi
 
-          (cd artifacts && sha256sum ./*.apk ./*.aab > SHA256SUMS)
+          (cd artifacts && sha256sum ./* > SHA256SUMS)
           {
             echo "version=$version"
             echo "tree=$tree"
