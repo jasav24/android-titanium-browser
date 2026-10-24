@@ -63,6 +63,14 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require a Linux build host
+        run: |
+          set -euo pipefail
+          if [ "$(uname -s)" != "Linux" ]; then
+            echo "::error::build.sh only runs on Linux: it installs its toolchain with apt-get, uses build/install-build-deps.sh, and the Vanadium patch series and GN/ninja targets assume Linux. This host reports $(uname -s). Register a Linux x64 runner (labels self-hosted, linux, x64, chromium-build) or use a GitHub-hosted larger runner via runner_label."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -265,6 +273,14 @@ jobs:
       smoke_status: ${{ steps.smoke.outputs.status }}
       smoke_reason: ${{ steps.smoke.outputs.reason }}
     steps:
+      - name: Require a Linux build host
+        run: |
+          set -euo pipefail
+          if [ "$(uname -s)" != "Linux" ]; then
+            echo "::error::build.sh only runs on Linux: it installs its toolchain with apt-get, uses build/install-build-deps.sh, and the Vanadium patch series and GN/ninja targets assume Linux. This host reports $(uname -s). Register a Linux x64 runner (labels self-hosted, linux, x64, chromium-build) or use a GitHub-hosted larger runner via runner_label."
+            exit 1
+          fi
+
       - name: Validate release signing prerequisites
         env:
           KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
