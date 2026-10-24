@@ -92,18 +92,32 @@ rm -rf "$SCRIPT_DIR"/vanadium/patches/*{pdf,PDF,for-content-public,toolbar-butto
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "TITANIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Titanium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "titanium"
-# git am records commits, so it needs a committer identity. GitHub-hosted
-# runners arrive with one; a plain build host does not, and git am then dies
-# with "unable to auto-detect email address".
-git config user.email "titanium-build@localhost"
-git config user.name "Titanium Build"
+# git am records commits, so it needs a committer identity, and it needs one for
+# every repository it writes to: src here, plus the v8 and
+# third_party/search_engines_data/resources checkouts that `gclient runhooks`
+# patches through vanadium/tools/common/apply_subprojects_patches.py. A
+# repo-local setting only covers src. Set it globally.
+# git am aborts *before* printing "Applying:" when the identity is missing, and
+# that hook reads git's stdout, so on a host with no global identity (a fresh
+# WSL distro, any plain build box) runhooks dies as
+# "IndexError: list index out of range" and the real reason, which git wrote to
+# stderr, is discarded. GitHub-hosted runners ship a global identity, which is
+# why only self-hosted runs ever showed the crash.
+git config --global user.email "titanium-build@localhost" \
+    || { echo "::error::could not set a global git committer identity (is HOME set for $(whoami)?)" >&2; exit 1; }
+git config --global user.name "Titanium Build"
 git am --whitespace=nowarn --keep-non-patch "$SCRIPT_DIR"/vanadium/patches/*.patch \
     || { echo "::error::applying the Vanadium/Titanium patch series failed" >&2; exit 1; }
 
 gclient sync -D --no-history --nohooks \
     || { echo "::error::gclient sync failed" >&2; exit 1; }
 gclient runhooks \
-    || { echo "::error::gclient runhooks failed" >&2; exit 1; }
+    || { echo "::error::gclient runhooks failed" >&2; \
+         echo "  apply_subprojects_patches.py hides git's stderr, so an IndexError" >&2; \
+         echo "  there means git refused to run at all. With the identity now set" >&2; \
+         echo "  globally, the remaining cause is ownership: this build runs as" >&2; \
+         echo "  $(whoami) and git rejects a checkout written by another user." >&2; \
+         exit 1; }
 ./build/install-build-deps.sh --no-prompt \
     || { echo "::error::install-build-deps.sh failed" >&2; exit 1; }
 
