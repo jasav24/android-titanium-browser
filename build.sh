@@ -92,6 +92,11 @@ rm -rf "$SCRIPT_DIR"/vanadium/patches/*{pdf,PDF,for-content-public,toolbar-butto
 replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "TITANIUM"
 replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Titanium"
 replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "titanium"
+# git am records commits, so it needs a committer identity. GitHub-hosted
+# runners arrive with one; a plain build host does not, and git am then dies
+# with "unable to auto-detect email address".
+git config user.email "titanium-build@localhost"
+git config user.name "Titanium Build"
 git am --whitespace=nowarn --keep-non-patch "$SCRIPT_DIR"/vanadium/patches/*.patch \
     || { echo "::error::applying the Vanadium/Titanium patch series failed" >&2; exit 1; }
 
