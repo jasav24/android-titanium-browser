@@ -29,7 +29,7 @@ on:
         type: string
         default: ""
       preflight_only:
-        description: "Only check whether this GitHub-hosted runner can build Chromium, then exit"
+        description: "Only check whether the runner named by runner_label can build Chromium, then exit"
         required: false
         type: boolean
         default: false
@@ -41,6 +41,11 @@ on:
         options:
           - "hosted"
           - "manifest"
+      runner_label:
+        description: "GitHub-hosted label used when build_runner is hosted (a larger runner, e.g. ubuntu-latest-16-cores, can meet the capacity gate)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
 
 permissions:
   contents: read
@@ -53,7 +58,7 @@ jobs:
   preflight:
     name: hosted-runner-preflight
     if: inputs.preflight_only == true
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_label != '' && inputs.runner_label || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -67,12 +72,16 @@ jobs:
           persist-credentials: false
 
       - name: Report runner capacity
+        env:
+          RUNNER_LABEL: ${{ inputs.runner_label }}
         run: |
           set -euo pipefail
           {
             echo "## GitHub-hosted runner capacity"
             echo
             echo '```'
+            echo "Label requested: ${RUNNER_LABEL:-ubuntu-latest}"
+            echo "Runner: $RUNNER_NAME"
             echo "CPUs: $(nproc)"
             free -h
             df -h "$GITHUB_WORKSPACE"
@@ -101,10 +110,15 @@ jobs:
 
           Options, in order of preference:
 
-          1. Run the workflow on a **GitHub-hosted larger runner** with at least
-             150 GB SSD and 16+ cores (GitHub Team/Enterprise billing required).
-             Change `runs-on` to that runner's label; nothing else changes.
-          2. Use a dedicated Linux build host with >= 100 GiB free disk.
+          1. Re-dispatch with `runner_label` set to a **GitHub-hosted larger
+             runner** (`ubuntu-latest-16-cores` or `ubuntu-latest-32-cores`),
+             which has the >= 150 GB SSD and 16+ cores this needs. Larger
+             runners require GitHub Team/Enterprise billing; if your plan does
+             not include them the job cannot start at all.
+          2. Register a dedicated **Linux** x64 build host with >= 100 GiB free
+             disk and set `build_runner` to `manifest`. A Windows host cannot
+             run build.sh: the toolchain install, patches and ninja targets all
+             assume Linux.
           3. Do not lower `build.min_free_disk_gib` in `.github/ui-protection.yml`
              to force a build on an 85 GiB runner; it will fail mid-build.
           MD
@@ -123,7 +137,7 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       retention_days: ${{ steps.manifest.outputs.artifact_retention_days }}
       state_branch: ${{ steps.manifest.outputs.state_branch }}
-      runner_labels: ${{ steps.manifest.outputs.runner_labels }}
+      runner_labels: ${{ steps.runner.outputs.labels }}
     steps:
       - name: Checkout default branch and submodules
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -136,6 +150,37 @@ jobs:
       - name: Read manifest policy
         id: manifest
         run: python3 .github/scripts/manifest_info.py
+
+      - name: Resolve the build runner
+        id: runner
+        env:
+          BUILD_RUNNER: ${{ inputs.build_runner }}
+          RUNNER_LABEL: ${{ inputs.runner_label }}
+          MANIFEST_LABELS: ${{ steps.manifest.outputs.runner_labels }}
+        run: |
+          set -euo pipefail
+          case "$BUILD_RUNNER" in
+            manifest)
+              labels="$MANIFEST_LABELS"
+              if ! printf '%s' "$labels" | python3 -c 'import json,sys; a=json.load(sys.stdin); sys.exit(0 if a else 1)'; then
+                echo "::error::build.runner_labels in .github/ui-protection.yml is empty; set it to the build host labels or use build_runner=hosted."
+                exit 1
+              fi
+              ;;
+            hosted)
+              if ! printf '%s' "$RUNNER_LABEL" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+                echo "::error::runner_label must be a single runner label (got: $RUNNER_LABEL)."
+                exit 1
+              fi
+              labels="$(printf '["%s"]' "$RUNNER_LABEL")"
+              ;;
+            *)
+              echo "::error::unknown build_runner: $BUILD_RUNNER"
+              exit 1
+              ;;
+          esac
+          echo "labels=$labels" >> "$GITHUB_OUTPUT"
+          echo "Build job will run on $labels"
 
       - name: Resolve the release commit and version
         id: resolve
@@ -198,12 +243,14 @@ jobs:
     name: release-build
     needs: plan
     if: needs.plan.result == 'success'
-    # `hosted` keeps the GitHub-hosted default. `manifest` sends the build to
-    # the build host declared by build.runner_labels in .github/ui-protection.yml,
-    # which is what validate-build.yml already uses. The capacity preflight in
-    # this job runs either way, so a host that cannot build Chromium still fails
-    # early instead of mid-build.
-    runs-on: ${{ fromJSON(inputs.build_runner == 'manifest' && needs.plan.outputs.runner_labels || '["ubuntu-latest"]') }}
+    # `hosted` (default) runs on the runner_label input, which is
+    # ubuntu-latest unless you name a larger hosted runner. `manifest` runs on
+    # build.runner_labels from .github/ui-protection.yml, the host
+    # validate-build.yml already uses. There is no automatic fallback: picking
+    # manifest and having no such runner registered simply waits. The capacity
+    # preflight in this job runs either way, so a host that cannot build
+    # Chromium fails early instead of mid-build.
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner_labels) }}
     environment: release
     timeout-minutes: 360
     permissions:
@@ -253,12 +300,16 @@ jobs:
 
       - name: Preflight build host
         id: capacity
+        env:
+          BUILD_RUNNER_LABELS: ${{ needs.plan.outputs.runner_labels }}
         run: |
           set -euo pipefail
           {
             echo "## Build host capacity"
             echo
             echo '```'
+            echo "Labels: ${BUILD_RUNNER_LABELS:-?}"
+            echo "Runner: $RUNNER_NAME"
             echo "CPUs: $(nproc)"
             free -h
             df -h "$GITHUB_WORKSPACE"
@@ -276,12 +327,13 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
           ## Build aborted before checkout
 
-          Chromium for Android needs about **100 GiB of free disk**; this
-          `ubuntu-latest` runner does not provide it. The preflight fails fast
-          instead of filling the disk during `gclient sync` or the build.
+          Chromium for Android needs about **100 GiB of free disk**; this runner
+          does not provide it. The preflight fails fast instead of filling the
+          disk during `gclient sync` or the build.
 
-          Use a GitHub-hosted larger runner with >= 150 GB SSD and 16+ cores,
-          or a dedicated Linux build host with >= 100 GiB free disk.
+          Either re-dispatch with `runner_label` set to a GitHub-hosted larger
+          runner (>= 150 GB SSD, 16+ cores), or set `build_runner` to `manifest`
+          once a Linux build host with >= 100 GiB free disk is registered.
           MD
           echo "::error::Insufficient runner capacity for a Chromium Android build; see the job summary."
 

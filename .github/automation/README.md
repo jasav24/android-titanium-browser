@@ -203,18 +203,23 @@ and anything requiring a build remain human-merged.
 `release.yml` is manual and defaults to GitHub-hosted `ubuntu-latest` plus
 **build only** (`publish: false`).
 
-0. `preflight_only: true` runs only `hosted-runner-preflight`. It prints CPUs,
-   RAM and free disk, then enforces `build.min_free_disk_gib` and Chromium's
-   RAM minimum. Use it to test a runner without starting a multi-hour build.
+0. `preflight_only: true` runs only `hosted-runner-preflight`. It prints the
+   runner label, hostname, CPUs, RAM and free disk, then enforces
+   `build.min_free_disk_gib` and Chromium's RAM minimum. Set `runner_label` to
+   `ubuntu-latest-16-cores` (or `-32-cores`) with this flag to measure a larger
+   hosted runner in about a minute without starting a build.
 1. `plan` verifies the requested ref is exactly the default-branch tip, reads the
    four-part version from `vanadium/args.gn`, and refuses an existing tag or
-   release.
+   release. It also resolves the build runner: `hosted` (default) maps
+   `runner_label` to a single-label list, `manifest` uses `build.runner_labels`,
+   and an empty label list, an empty/odd label or an unknown choice fails the
+   plan instead of falling back.
 2. `build` runs behind the `release` environment and requires
    `RELEASE_KEYSTORE_B64`, `RELEASE_LOCAL_PROPERTIES_B64` and the
-   `RELEASE_CERT_SHA256` repository variable. It runs on `ubuntu-latest` unless
-   the `build_runner: manifest` input is selected, which sends it to
-   `build.runner_labels` from `.github/ui-protection.yml` — the same host
-   `validate-build.yml` uses. Either way it repeats the capacity preflight
+   `RELEASE_CERT_SHA256` repository variable. It runs on the labels `plan`
+   resolved, which is `ubuntu-latest` unless you pass a different
+   `runner_label` or select `build_runner: manifest` (the host
+   `validate-build.yml` uses). Either way it repeats the capacity preflight
    before checkout, so an undersized runner fails in about a minute instead of
    filling the disk. The build is ARM64-only: `build.sh` is invoked with
    `BUILD_ABIS=arm64`, `BUILD_BUNDLE=false` and `SYMBOL_LEVEL=0`. Its defaults
@@ -266,13 +271,18 @@ explicit rule gives a better reason and the correct build requirement.
 
 ### 2. Runner
 
-`release.yml` builds on `ubuntu-latest` unless you explicitly dispatch it with
-`build_runner: manifest`, which then reads `build.runner_labels`. There is no
-automatic fallback and no silent downgrade of checks: with the default the job
-never lands on a self-hosted machine, and with `manifest` it waits for a runner
-carrying those labels instead of quietly falling back to a hosted one. The
-capacity preflight runs on either host. `validate-build.yml` uses the
-self-hosted labels below for PR builds.
+`release.yml` builds on `ubuntu-latest` by default. Two inputs change that, and
+both are explicit: `runner_label` swaps in any GitHub-hosted label (for example
+`ubuntu-latest-16-cores`), and `build_runner: manifest` uses
+`build.runner_labels` instead. There is no automatic fallback and no silent
+downgrade of checks: with the defaults the job never lands on a self-hosted
+machine, and with `manifest` it waits for a runner carrying those labels rather
+than quietly reverting to a hosted one. The capacity preflight runs on either
+host. `validate-build.yml` uses the self-hosted labels below for PR builds.
+
+A full Chromium build needs a **Linux** x64 host; a Windows machine cannot run
+`build.sh` at all, so a Windows box (including an ephemeral Windows runner) is
+never an option for either path.
 
 A full Chromium build needs a dedicated Linux x64 host. The labels for the PR
 build runner are:
@@ -305,12 +315,12 @@ checkout. This is intentional: a forced build would exhaust the disk during
 GitHub-hosted larger runners are the supported path. GitHub documents a 16-core
 larger runner as 16 vCPU / 64 GB RAM / 150 GB SSD, which satisfies both
 thresholds (confirm the exact shape for your plan; it is not measured here). To
-use one, list its label in `build.runner_labels` and dispatch with
-`build_runner: manifest`, or change `runs-on` in `release.yml` to the larger
-runner's label directly; no other workflow change is needed. Larger runners require GitHub
-Team/Enterprise billing. A dedicated Linux host with >= 100 GiB free disk is the
-alternative. Do not lower `build.min_free_disk_gib` to force a build on a
-standard hosted runner.
+use one, dispatch `release.yml` with `runner_label` set to that label — first
+with `preflight_only: true` to measure it, then as the real build. No workflow
+edit is needed. Larger runners require GitHub Team/Enterprise billing. A
+dedicated Linux host with >= 100 GiB free disk is the alternative; register it
+with the labels above and dispatch with `build_runner: manifest`. Do not lower
+`build.min_free_disk_gib` to force a build on a standard hosted runner.
 
 Two further hosted limits apply even after the disk threshold is met: the
 6-hour job cap and the CPU count. A full arm64 Chromium build on 4 vCPUs will
