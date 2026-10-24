@@ -315,17 +315,39 @@ can grow into. Only the Windows side knows which volume holds the VHDX, so the
 operator names it on the build host:
 
 ```sh
-# in the runner's .env, then restart the service
-export TITANIUM_WSL_HOST_MOUNT=/mnt/d
+# in the runner directory, as a plain KEY=value line:
+echo TITANIUM_WSL_HOST_MOUNT=/mnt/d >> .env
 ```
 
-The gate then reports `Free disk: … , ok, from host volume /mnt/d` and applies
-`build.min_free_disk_gib` to that figure. Without it — or if the named path is
-not a host-drive mount, so a tmpfs cannot rubber-stamp the check — the disk line
-stays unverifiable and the preflight fails with the message above. Its RAM line
-is trustworthy: `/proc/meminfo` cannot lie about a VM quota, and that same run
-correctly failed on `7.76 GiB` (WSL2 gives a distro 50 % of host RAM unless
-`.wslconfig` says otherwise).
+`.env` is not read by anything on its own. The unit that `svc.sh install`
+generates has no `EnvironmentFile`, and `runsvc.sh` only carries the comment
+`# insert anything to setup env when running as a service` where an operator is
+expected to add one, so an `export` line dropped into `.env` is inert — measured
+by reading `/proc/<listener pid>/environ` after a stop/start. A systemd drop-in
+makes the file live:
+
+```sh
+S=/etc/systemd/system/actions.runner.<repo>.<runner>.service
+sudo mkdir -p "$S.d"
+printf '[Service]\nEnvironmentFile=%s/.env\n' "$PWD" | sudo tee "$S.d/override.conf"
+sudo systemctl daemon-reload
+sudo ./svc.sh stop && sudo ./svc.sh start   # svc.sh has no restart subcommand
+```
+
+`EnvironmentFile` parses `KEY=value`, not `export KEY=value`, which is why the
+line above has no `export`. Then the gate reports `Free disk: … , from host
+volume /mnt/d` and applies `build.min_free_disk_gib` to that figure; on run
+`40078943942` the labelled WSL host printed
+`Free disk: 90.1 GiB (minimum 100.0, INSUFFICIENT, from host volume /mnt/d)` and
+failed `Preflight build host` with `free disk 90.1 GiB is below the Chromium
+minimum 100.0 GiB` — the box genuinely cannot hold the checkout, and the number
+is now the host volume's rather than the VHDX's virtual size. Without the
+variable — or if the named path is not a host-drive mount, so a tmpfs cannot
+rubber-stamp the check — the disk line stays unverifiable and the preflight
+fails with the message above. Its RAM line is trustworthy: `/proc/meminfo`
+cannot lie about a VM quota, and that same run correctly passed `11.7 GiB`
+against the 8 GiB minimum while warning below the 32 GiB recommendation (WSL2
+gives a distro 50 % of host RAM unless `.wslconfig` says otherwise).
 
 **`gclient runhooks` hides git's refusal reason.** The
 `apply_subprojects_patches` hook runs `git am` inside `src/v8` and
