@@ -66,6 +66,20 @@ def memory_gib() -> float | None:
     return None
 
 
+def wsl_virtual_disk() -> bool:
+    """True when running inside WSL2, where free disk cannot be trusted.
+
+    WSL2 mounts a sparse VHDX, so statvfs reports the virtual disk size (a
+    terabyte by default) rather than the space actually left on the Windows
+    volume backing it. A build that trusts the figure fills the real volume and
+    dies partway through `gclient sync`. Probing by reserving `min_disk` bytes
+    is not a fix either: the reservation is what grows the VHDX and it is not
+    given back when the probe file is deleted, so the check would consume the
+    very space the build needs. Fail closed instead.
+    """
+    return "microsoft-standard-WSL" in platform.release()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     repo = Path(args.repo).resolve()
@@ -137,10 +151,18 @@ def main(argv: list[str] | None = None) -> int:
     min_disk = float(build.get("min_free_disk_gib", 100))
     min_ram = float(build.get("min_ram_gib", 8))
     recommended_ram = float(build.get("recommended_ram_gib", 32))
-    disk_ok = free_gib >= min_disk
+    virtual_disk = wsl_virtual_disk()
+    disk_ok = free_gib >= min_disk and not virtual_disk
     ram_ok = ram_gib is None or ram_gib >= min_ram
     ram_recommended = ram_gib is None or ram_gib >= recommended_ram
-    if not disk_ok:
+    if virtual_disk:
+        message = (
+            f"free disk is unverifiable on WSL2: {free_gib} GiB is the sparse VHDX "
+            "virtual size, not the space left on the Windows volume behind it. "
+            "Build on a native Linux host or a GitHub-hosted runner instead."
+        )
+        (errors if args.build_host else warnings).append(message)
+    elif not disk_ok:
         message = (
             f"free disk {free_gib} GiB is below the Chromium minimum {min_disk} GiB"
         )
@@ -175,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         "min_ram_gib": min_ram,
         "recommended_ram_gib": recommended_ram,
         "meets_disk_requirement": disk_ok,
+        "disk_verifiable": not virtual_disk,
         "meets_ram_requirement": ram_ok,
         "meets_recommended_ram": ram_recommended,
         "build_ready": disk_ok and ram_ok and platform.system() == "Linux",
@@ -254,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         f"- Host: {platform.platform()}",
         f"- CPUs: {capacity['cpu_count']}",
         f"- Free disk: {free_gib} GiB (minimum {min_disk}, "
-        f"{'ok' if disk_ok else 'INSUFFICIENT'})",
+        f"{'UNVERIFIABLE on WSL2' if virtual_disk else ('ok' if disk_ok else 'INSUFFICIENT')})",
         f"- RAM: {ram_gib if ram_gib is not None else 'unknown'} GiB "
         f"(minimum {min_ram}, recommended {recommended_ram}, "
         f"{'ok' if ram_ok else 'INSUFFICIENT'})",
