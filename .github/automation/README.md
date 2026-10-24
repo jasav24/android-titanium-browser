@@ -19,7 +19,7 @@ without a successful signed build and a device smoke test.
 | `ui-protection.yml` | every pull request, manual | Classify the PR diff against the base-branch manifest and publish the `ui-protection` check on the head commit. |
 | `validate-build.yml` | every pull request, manual | Run static validation and build policy on every PR; run an exact-tree full Chromium build when required and approved. |
 | `upstream-review.yml` | PR close, `/automerge`, validation completion, manual | Record merged upstream SHAs durably and run the optional, fully gated auto-merge path. |
-| `release.yml` | manual only | Build, sign, verify, smoke-test and optionally publish an ARM64 APK from the current default-branch tip on GitHub-hosted `ubuntu-latest`. |
+| `release.yml` | manual only | Build, sign, verify, smoke-test and optionally publish an ARM64 APK from the current default-branch tip on GitHub-hosted `ubuntu-latest` (or the manifest build host with `build_runner: manifest`). |
 
 The workflows are in `.github/workflows/`; the Python and shell helpers are in
 `.github/scripts/`.
@@ -200,8 +200,8 @@ and anything requiring a build remain human-merged.
 
 ## Release flow
 
-`release.yml` is manual, targets GitHub-hosted `ubuntu-latest` only, and defaults
-to **build only** (`publish: false`).
+`release.yml` is manual and defaults to GitHub-hosted `ubuntu-latest` plus
+**build only** (`publish: false`).
 
 0. `preflight_only: true` runs only `hosted-runner-preflight`. It prints CPUs,
    RAM and free disk, then enforces `build.min_free_disk_gib` and Chromium's
@@ -209,11 +209,14 @@ to **build only** (`publish: false`).
 1. `plan` verifies the requested ref is exactly the default-branch tip, reads the
    four-part version from `vanadium/args.gn`, and refuses an existing tag or
    release.
-2. `build` runs on `ubuntu-latest` behind the `release` environment and requires
+2. `build` runs behind the `release` environment and requires
    `RELEASE_KEYSTORE_B64`, `RELEASE_LOCAL_PROPERTIES_B64` and the
-   `RELEASE_CERT_SHA256` repository variable. Before checkout it repeats the
-   capacity preflight, so an undersized runner fails in about a minute instead
-   of filling the disk. The build is ARM64-only: `build.sh` is invoked with
+   `RELEASE_CERT_SHA256` repository variable. It runs on `ubuntu-latest` unless
+   the `build_runner: manifest` input is selected, which sends it to
+   `build.runner_labels` from `.github/ui-protection.yml` — the same host
+   `validate-build.yml` uses. Either way it repeats the capacity preflight
+   before checkout, so an undersized runner fails in about a minute instead of
+   filling the disk. The build is ARM64-only: `build.sh` is invoked with
    `BUILD_ABIS=arm64`, `BUILD_BUNDLE=false` and `SYMBOL_LEVEL=0`. Its defaults
    remain arm + arm64 + AAB, which `validate-build.yml` still uses.
 3. Verification requires exactly one `*-arm64-v8a.apk`, rejects any ARMv7 APK or
@@ -263,10 +266,13 @@ explicit rule gives a better reason and the correct build requirement.
 
 ### 2. Runner
 
-`release.yml` uses `runs-on: ubuntu-latest` directly. It does not read
-`build.runner_labels`, fall back to a self-hosted runner, or silently downgrade
-checks. `validate-build.yml` still uses the self-hosted labels below for PR
-builds.
+`release.yml` builds on `ubuntu-latest` unless you explicitly dispatch it with
+`build_runner: manifest`, which then reads `build.runner_labels`. There is no
+automatic fallback and no silent downgrade of checks: with the default the job
+never lands on a self-hosted machine, and with `manifest` it waits for a runner
+carrying those labels instead of quietly falling back to a hosted one. The
+capacity preflight runs on either host. `validate-build.yml` uses the
+self-hosted labels below for PR builds.
 
 A full Chromium build needs a dedicated Linux x64 host. The labels for the PR
 build runner are:
@@ -299,8 +305,9 @@ checkout. This is intentional: a forced build would exhaust the disk during
 GitHub-hosted larger runners are the supported path. GitHub documents a 16-core
 larger runner as 16 vCPU / 64 GB RAM / 150 GB SSD, which satisfies both
 thresholds (confirm the exact shape for your plan; it is not measured here). To
-use one, change `runs-on: ubuntu-latest` in `release.yml` to the larger runner's
-label; no other workflow change is needed. Larger runners require GitHub
+use one, list its label in `build.runner_labels` and dispatch with
+`build_runner: manifest`, or change `runs-on` in `release.yml` to the larger
+runner's label directly; no other workflow change is needed. Larger runners require GitHub
 Team/Enterprise billing. A dedicated Linux host with >= 100 GiB free disk is the
 alternative. Do not lower `build.min_free_disk_gib` to force a build on a
 standard hosted runner.
@@ -381,7 +388,7 @@ Create these GitHub environments under **Settings > Environments**:
 | Environment | Used by | Recommended protection |
 | --- | --- | --- |
 | `chromium-build` | full test builds | Required reviewers; restrict to the build host; no release secrets. |
-| `release` | signed release build on `ubuntu-latest` | Required reviewers; release signing secrets only. |
+| `release` | signed release build (hosted by default) | Required reviewers; release signing secrets only. |
 | `release-publish` | publishing | Required reviewers; limit to the default branch. |
 | `upstream-automerge` | optional auto-merge | Required reviewers; only if auto-merge is enabled. |
 
@@ -555,7 +562,8 @@ Implemented in this repository and statically validated locally:
   PR marker round-trips, release marker protection, AAB/ARMv7 rejection and
   artifact tampering.
 - The manifest matches all 23 `patch.sh` sections in the checked-out source.
-- `release.yml` is wired for GitHub-hosted `ubuntu-latest` with an ARM64-only
+- `release.yml` is wired for GitHub-hosted `ubuntu-latest` by default, with an
+  opt-in `build_runner: manifest` choice for a declared build host, an ARM64-only
   build, a mandatory certificate pin, an optional smoke test and a publish gate
   that requires the smoke test to have passed.
 - Two failure paths are confirmed on real GitHub-hosted runners in this fork:

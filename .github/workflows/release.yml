@@ -33,6 +33,14 @@ on:
         required: false
         type: boolean
         default: false
+      build_runner:
+        description: "Runner used for the build job"
+        required: false
+        type: choice
+        default: "hosted"
+        options:
+          - "hosted"
+          - "manifest"
 
 permissions:
   contents: read
@@ -115,6 +123,7 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       retention_days: ${{ steps.manifest.outputs.artifact_retention_days }}
       state_branch: ${{ steps.manifest.outputs.state_branch }}
+      runner_labels: ${{ steps.manifest.outputs.runner_labels }}
     steps:
       - name: Checkout default branch and submodules
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -189,7 +198,12 @@ jobs:
     name: release-build
     needs: plan
     if: needs.plan.result == 'success'
-    runs-on: ubuntu-latest
+    # `hosted` keeps the GitHub-hosted default. `manifest` sends the build to
+    # the build host declared by build.runner_labels in .github/ui-protection.yml,
+    # which is what validate-build.yml already uses. The capacity preflight in
+    # this job runs either way, so a host that cannot build Chromium still fails
+    # early instead of mid-build.
+    runs-on: ${{ fromJSON(inputs.build_runner == 'manifest' && needs.plan.outputs.runner_labels || '["ubuntu-latest"]') }}
     environment: release
     timeout-minutes: 360
     permissions:
