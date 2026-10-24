@@ -57,6 +57,15 @@ export VERSION
 CHROMIUM_SOURCE=https://chromium.googlesource.com/chromium/src.git # https://github.com/chromium/chromium.git
 export DEBIAN_FRONTEND=noninteractive
 
+# A runner takes jobs unattended, so it can never answer a "[sudo] password"
+# prompt: the step would sit there until the job timeout. Fail here instead of
+# forty minutes into provisioning. GitHub-hosted runners already grant
+# passwordless sudo to the runner user.
+if ! sudo -n true 2>/dev/null; then
+    echo "::error::this build host needs passwordless sudo for $(whoami): build.sh and build/install-build-deps.sh call sudo repeatedly and a runner cannot answer a password prompt. Add a sudoers drop-in (for a dedicated build host: '<user> ALL=(ALL) NOPASSWD:ALL' in /etc/sudoers.d/, mode 0440), or run the job on a GitHub-hosted runner." >&2
+    exit 1
+fi
+
 # python3-pil is the real Pillow binary package; python3-pillow, the name used
 # upstream, only works as the virtual package it Provides.
 sudo apt-get update
