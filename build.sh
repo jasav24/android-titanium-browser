@@ -69,7 +69,12 @@ fi
 # python3-pil is the real Pillow binary package; python3-pillow, the name used
 # upstream, only works as the virtual package it Provides.
 sudo apt-get update
-sudo apt-get install -y sudo lsb-release file nano git curl python3 python3-pil imagemagick librsvg2-bin
+# bzip2 has to be here rather than left to install-build-deps.sh below: the
+# AFDO hook that `gclient runhooks` runs (src/tools/download_optimization_profile.py)
+# shells out to bzip2, and runhooks happens before install-build-deps.sh, so a
+# host without it dies ~25 minutes into the sync with a bare FileNotFoundError.
+# unzip is what the workflow's artifact check uses to test the .aab.
+sudo apt-get install -y sudo lsb-release file nano git curl python3 python3-pil imagemagick librsvg2-bin bzip2 zip unzip
 sudo dpkg --add-architecture i386; sudo apt-get update; sudo apt-get install -y libgcc-s1:i386
 
 if [ ! -d depot_tools ]; then
@@ -122,10 +127,13 @@ gclient sync -D --no-history --nohooks \
     || { echo "::error::gclient sync failed" >&2; exit 1; }
 gclient runhooks \
     || { echo "::error::gclient runhooks failed" >&2; \
-         echo "  apply_subprojects_patches.py hides git's stderr, so an IndexError" >&2; \
-         echo "  there means git refused to run at all. With the identity now set" >&2; \
-         echo "  globally, the remaining cause is ownership: this build runs as" >&2; \
-         echo "  $(whoami) and git rejects a checkout written by another user." >&2; \
+         echo "  Two causes have bitten here. apply_subprojects_patches.py hides" >&2; \
+         echo "  git's stderr, so an IndexError means git refused to run at all:" >&2; \
+         echo "  with the identity now set globally, that leaves ownership (this" >&2; \
+         echo "  build runs as $(whoami) and git rejects a checkout written by" >&2; \
+         echo "  another user). A FileNotFoundError instead names a missing host" >&2; \
+         echo "  tool, bzip2 for the AFDO profile hook, and is fixed by the" >&2; \
+         echo "  apt-get install above." >&2; \
          exit 1; }
 ./build/install-build-deps.sh --no-prompt \
     || { echo "::error::install-build-deps.sh failed" >&2; exit 1; }
