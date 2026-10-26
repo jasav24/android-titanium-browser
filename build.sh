@@ -164,6 +164,20 @@ if [ "$resume" = "0" ]; then
     : > out/Default/.titanium-prepared
 fi
 
+# depot_tools is a fresh shallow clone in every job. A resumed tree skips
+# gclient, so nothing has bootstrapped the python shim depot_tools puts first on
+# PATH, and install-build-deps.sh resolves python3 to it and dies with
+# "python3_bin_reldir.txt not found. need to initialize depot_tools".
+if [ "$resume" = "1" ]; then
+    if [ -x "$SCRIPT_DIR/depot_tools/ensure_bootstrap" ]; then
+        ( cd "$SCRIPT_DIR/depot_tools" && ./ensure_bootstrap ) \
+            || { echo "::error::could not bootstrap depot_tools on the resumed tree" >&2; exit 1; }
+    else
+        "$SCRIPT_DIR/depot_tools/gclient" --version >/dev/null \
+            || { echo "::error::could not bootstrap depot_tools on the resumed tree" >&2; exit 1; }
+    fi
+fi
+
 # Runs in both paths: a resumed tree is on a fresh OS image, so the host
 # packages are always missing.
 ./build/install-build-deps.sh --no-prompt \

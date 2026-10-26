@@ -84,13 +84,32 @@ jobs:
               exit 0
             fi
             cached_commit=$(sed -n 's/^commit=//p' cache/manifest.txt)
+            cached_recipe=$(sed -n 's/^recipe=//p' cache/manifest.txt)
             generation=$(sed -n 's/^generation=//p' cache/manifest.txt)
             parts=$(sed -n 's/^parts=//p' cache/manifest.txt)
             tag=$(printf 'g%03d' "$generation")
-            if [ "$cached_commit" != "$GITHUB_SHA" ]; then
-              echo "::notice::the cache was built from $cached_commit, this job builds $GITHUB_SHA; starting cold"
+            # The tree is reusable only when the inputs that shape it are the
+            # same: the patch series, args.gn, .gclient and the vanadium
+            # checkout. Comparing commits was too strict — a workflow-only
+            # commit threw away a perfectly good tree — and too loose the other
+            # way: a new patch series under the same commit would resume a tree
+            # that never received it.
+            recipe=$(
+              { cat args.gn patch.sh .gclient 2>/dev/null
+                git -C vanadium rev-parse HEAD 2>/dev/null || echo no-vanadium
+              } | sha256sum | cut -d' ' -f1
+            )
+            restore=false
+            if [ -z "$cached_recipe" ]; then
+              echo "::warning::$tag carries no recipe fingerprint (older generation); resuming because action=continue, but use action=reset if the patch series changed"
+              restore=true
+            elif [ "$cached_recipe" = "$recipe" ]; then
+              restore=true
             else
-              echo "restoring $tag ($parts parts)"
+              echo "::notice::$tag was prepared from recipe $cached_recipe, this checkout is $recipe; starting cold"
+            fi
+            if [ "$restore" = "true" ]; then
+              echo "restoring $tag ($parts parts, built from $cached_commit)"
               gh release download build-cache --repo "$GITHUB_REPOSITORY" \
                 --pattern "${tag}-part-*" --dir cache --clobber
               found=$(find cache -maxdepth 1 -name "${tag}-part-*" | wc -l)
@@ -202,8 +221,13 @@ jobs:
           # The manifest is written last: a half-uploaded generation is never
           # advertised, so a later job either restores the previous one or fails
           # on the part count instead of extracting a truncated tar.
-          printf 'generation=%d\nparts=%d\ncommit=%s\n' "$generation" "$parts" "$GITHUB_SHA" \
-            > cache/manifest.txt
+          recipe=$(
+            { cat args.gn patch.sh .gclient 2>/dev/null
+              git -C vanadium rev-parse HEAD 2>/dev/null || echo no-vanadium
+            } | sha256sum | cut -d' ' -f1
+          )
+          printf 'generation=%d\nparts=%d\ncommit=%s\nrecipe=%s\n' \
+            "$generation" "$parts" "$GITHUB_SHA" "$recipe" > cache/manifest.txt
           gh release upload build-cache cache/manifest.txt --repo "$GITHUB_REPOSITORY" --clobber
           gh release view build-cache --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' \
