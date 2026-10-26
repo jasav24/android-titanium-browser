@@ -301,12 +301,11 @@ jobs:
             --add-label automation --add-label upstream-review --add-label needs-human-review || true
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
-      - name: Queue validation for the new pull requests
+      - name: Queue the UI protection check for the new pull requests
         if: inputs.dry_run != true
         env:
           CANDIDATE_PR: ${{ steps.candidate_pr.outputs.number }}
           REVIEW_PR: ${{ steps.review_pr.outputs.number }}
-          REQUIRES_FULL_BUILD: ${{ steps.sync.outputs.requires_full_build }}
         run: |
           set -euo pipefail
           if [ -n "${AUTOMATION_TOKEN:-}" ]; then
@@ -314,18 +313,10 @@ jobs:
             exit 0
           fi
           if [ -n "$CANDIDATE_PR" ]; then
-            mode="auto"
-            if [ "$REQUIRES_FULL_BUILD" = "true" ]; then
-              mode="full"
-            fi
-            gh workflow run validate-build.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
-              -f pr_number="$CANDIDATE_PR" -f mode="$mode"
             gh workflow run ui-protection.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
               -f pr_number="$CANDIDATE_PR"
           fi
           if [ -n "$REVIEW_PR" ]; then
-            gh workflow run validate-build.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
-              -f pr_number="$REVIEW_PR" -f mode=lightweight
             gh workflow run ui-protection.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
               -f pr_number="$REVIEW_PR"
           fi
