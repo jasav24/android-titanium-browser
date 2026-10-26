@@ -42,6 +42,20 @@ case "$SIGN_RELEASE" in
     *) echo "::error::SIGN_RELEASE must be true or false" >&2; exit 2 ;;
 esac
 
+# RESUME=1 accepts a chromium/ tree left behind by an earlier job and skips
+# everything that prepares it: the Chromium fetch, git am, gclient sync and
+# patch.sh. A Chromium build does not fit in GitHub's 360-minute job limit on a
+# 4-core hosted runner, so .github/workflows/chained-build.yml carries the tree
+# between jobs and each job continues the same ninja build. Re-preparing a
+# resumed tree is not merely wasteful: git am fails on an already-patched
+# checkout, and patch.sh has edits written as `s|X|&Y|`, which would append a
+# second Y.
+RESUME="${RESUME:-0}"
+case "$RESUME" in
+    0|1) ;;
+    *) echo "::error::RESUME must be 0 or 1" >&2; exit 2 ;;
+esac
+
 trap 'rm -rf "$SCRIPT_DIR/keys"' EXIT
 if [ "$SIGN_RELEASE" = "true" ]; then
     set_keys
@@ -83,62 +97,77 @@ if [ ! -d depot_tools ]; then
 fi
 export PATH="$PWD/depot_tools:$PATH"
 
-mkdir -p chromium/src/out/Default
+mkdir -p chromium/src
 cd chromium/src
-git init
-if git remote get-url origin >/dev/null 2>&1; then
-    git remote set-url origin "$CHROMIUM_SOURCE"
-else
-    git remote add origin "$CHROMIUM_SOURCE"
+
+resume=0
+if [ "$RESUME" = "1" ] && [ -d out/Default ]; then
+    resume=1
+    echo "::notice::resuming the cached checkout in $PWD: skipping fetch, patches, runhooks and patch.sh"
 fi
-git fetch --depth 1 "$CHROMIUM_SOURCE" "+refs/tags/$VERSION:chromium_$VERSION" \
-    || { echo "::error::failed to fetch Chromium $VERSION" >&2; exit 1; }
-git checkout "$VERSION"
-cp "$SCRIPT_DIR/.gclient" ../.gclient
 
-# https://grapheneos.org/build#browser-and-webview
-rm -rf "$SCRIPT_DIR"/vanadium/patches/*trichrome-{apk-build-targets,browser-apk-targets}.patch
-rm -rf "$SCRIPT_DIR"/vanadium/patches/*{detailed,supported}-language*.patch
-rm -rf "$SCRIPT_DIR"/vanadium/patches/*javascript-optimizer-{site-setting,settings-UI}.patch
-rm -rf "$SCRIPT_DIR"/vanadium/patches/*component-updates.patch
-rm -rf "$SCRIPT_DIR"/vanadium/patches/*{pdf,PDF,for-content-public,toolbar-button,configs-from-config-app,config-app-parsing,new-tab-card,predictive-back}*.patch
-# rm -rf "$SCRIPT_DIR"/vanadium/patches/*crashpad*.patch
-replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "TITANIUM"
-replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Titanium"
-replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "titanium"
-# git am records commits, so it needs a committer identity, and it needs one for
-# every repository it writes to: src here, plus the v8 and
-# third_party/search_engines_data/resources checkouts that `gclient runhooks`
-# patches through vanadium/tools/common/apply_subprojects_patches.py. A
-# repo-local setting only covers src. Set it globally.
-# git am aborts *before* printing "Applying:" when the identity is missing, and
-# that hook reads git's stdout, so on a host with no global identity (a fresh
-# WSL distro, any plain build box) runhooks dies as
-# "IndexError: list index out of range" and the real reason, which git wrote to
-# stderr, is discarded. GitHub-hosted runners ship a global identity, which is
-# why only self-hosted runs ever showed the crash.
-git config --global user.email "titanium-build@localhost" \
-    || { echo "::error::could not set a global git committer identity (is HOME set for $(whoami)?)" >&2; exit 1; }
-git config --global user.name "Titanium Build"
-git am --whitespace=nowarn --keep-non-patch "$SCRIPT_DIR"/vanadium/patches/*.patch \
-    || { echo "::error::applying the Vanadium/Titanium patch series failed" >&2; exit 1; }
+if [ "$resume" = "0" ]; then
+    mkdir -p out/Default
+    git init
+    if git remote get-url origin >/dev/null 2>&1; then
+        git remote set-url origin "$CHROMIUM_SOURCE"
+    else
+        git remote add origin "$CHROMIUM_SOURCE"
+    fi
+    git fetch --depth 1 "$CHROMIUM_SOURCE" "+refs/tags/$VERSION:chromium_$VERSION" \
+        || { echo "::error::failed to fetch Chromium $VERSION" >&2; exit 1; }
+    git checkout "$VERSION"
+    cp "$SCRIPT_DIR/.gclient" ../.gclient
 
-gclient sync -D --no-history --nohooks \
-    || { echo "::error::gclient sync failed" >&2; exit 1; }
-gclient runhooks \
-    || { echo "::error::gclient runhooks failed" >&2; \
-         echo "  Two causes have bitten here. apply_subprojects_patches.py hides" >&2; \
-         echo "  git's stderr, so an IndexError means git refused to run at all:" >&2; \
-         echo "  with the identity now set globally, that leaves ownership (this" >&2; \
-         echo "  build runs as $(whoami) and git rejects a checkout written by" >&2; \
-         echo "  another user). A FileNotFoundError instead names a missing host" >&2; \
-         echo "  tool, bzip2 for the AFDO profile hook, and is fixed by the" >&2; \
-         echo "  apt-get install above." >&2; \
-         exit 1; }
+    # https://grapheneos.org/build#browser-and-webview
+    rm -rf "$SCRIPT_DIR"/vanadium/patches/*trichrome-{apk-build-targets,browser-apk-targets}.patch
+    rm -rf "$SCRIPT_DIR"/vanadium/patches/*{detailed,supported}-language*.patch
+    rm -rf "$SCRIPT_DIR"/vanadium/patches/*javascript-optimizer-{site-setting,settings-UI}.patch
+    rm -rf "$SCRIPT_DIR"/vanadium/patches/*component-updates.patch
+    rm -rf "$SCRIPT_DIR"/vanadium/patches/*{pdf,PDF,for-content-public,toolbar-button,configs-from-config-app,config-app-parsing,new-tab-card,predictive-back}*.patch
+    # rm -rf "$SCRIPT_DIR"/vanadium/patches/*crashpad*.patch
+    replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "TITANIUM"
+    replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Titanium"
+    replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "titanium"
+    # git am records commits, so it needs a committer identity, and it needs one for
+    # every repository it writes to: src here, plus the v8 and
+    # third_party/search_engines_data/resources checkouts that `gclient runhooks`
+    # patches through vanadium/tools/common/apply_subprojects_patches.py. A
+    # repo-local setting only covers src. Set it globally.
+    # git am aborts *before* printing "Applying:" when the identity is missing, and
+    # that hook reads git's stdout, so on a host with no global identity (a fresh
+    # WSL distro, any plain build box) runhooks dies as
+    # "IndexError: list index out of range" and the real reason, which git wrote to
+    # stderr, is discarded. GitHub-hosted runners ship a global identity, which is
+    # why only self-hosted runs ever showed the crash.
+    git config --global user.email "titanium-build@localhost" \
+        || { echo "::error::could not set a global git committer identity (is HOME set for $(whoami)?)" >&2; exit 1; }
+    git config --global user.name "Titanium Build"
+    git am --whitespace=nowarn --keep-non-patch "$SCRIPT_DIR"/vanadium/patches/*.patch \
+        || { echo "::error::applying the Vanadium/Titanium patch series failed" >&2; exit 1; }
+
+    gclient sync -D --no-history --nohooks \
+        || { echo "::error::gclient sync failed" >&2; exit 1; }
+    gclient runhooks \
+        || { echo "::error::gclient runhooks failed" >&2; \
+             echo "  Two causes have bitten here. apply_subprojects_patches.py hides" >&2; \
+             echo "  git's stderr, so an IndexError means git refused to run at all:" >&2; \
+             echo "  with the identity now set globally, that leaves ownership (this" >&2; \
+             echo "  build runs as $(whoami) and git rejects a checkout written by" >&2; \
+             echo "  another user). A FileNotFoundError instead names a missing host" >&2; \
+             echo "  tool, bzip2 for the AFDO profile hook, and is fixed by the" >&2; \
+             echo "  apt-get install above." >&2; \
+             exit 1; }
+fi
+
+# Runs in both paths: a resumed tree is on a fresh OS image, so the host
+# packages are always missing.
 ./build/install-build-deps.sh --no-prompt \
     || { echo "::error::install-build-deps.sh failed" >&2; exit 1; }
 
-source "$SCRIPT_DIR/patch.sh"
+if [ "$resume" = "0" ]; then
+    source "$SCRIPT_DIR/patch.sh"
+fi
 cp "$SCRIPT_DIR/args.gn" out/Default/args.gn
 if [ -n "$SYMBOL_LEVEL" ]; then
     if grep -q '^symbol_level = ' out/Default/args.gn; then

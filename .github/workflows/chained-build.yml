@@ -1,0 +1,230 @@
+name: Chained build
+
+# Chromium does not finish inside GitHub's 360-minute job limit on a 4-core
+# hosted runner, so the build is split across several dispatched jobs and the
+# prepared checkout travels between them:
+#
+#   reclaim disk -> restore chromium/ from the build-cache release
+#                -> compile for build_minutes
+#                -> re-upload chromium/ -> dispatch again
+#
+# chromium/ carries both the patched source and out/Default, which is what lets
+# the next job's ninja continue instead of starting over. Dispatch the workflow
+# again with action=continue until the titanium-arm64-unsigned artifact appears.
+# action=reset ignores the cache and builds from scratch.
+#
+# The APK this produces is unsigned; SIGN_RELEASE=false keeps the release
+# keystore out of a runner that is not a build host under your control.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "continue from the cached checkout, or reset and build from scratch"
+        required: true
+        type: choice
+        options:
+          - continue
+          - reset
+        default: continue
+      build_minutes:
+        description: "Minutes of compilation this job may attempt (keep at or below 260)"
+        required: true
+        type: string
+        default: "240"
+
+permissions:
+  contents: write   # the cache is stored as assets on the `build-cache` release
+
+concurrency:
+  group: chained-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Reclaim runner disk
+        run: |
+          set -euo pipefail
+          echo "free before: $(df -BG --output=avail / | tail -1 | awk '{print $1}')"
+          # Preinstalled toolchains this build never touches. The image has
+          # ~84 GiB free, and a Chromium checkout plus out/ needs more.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache /usr/local/share/boost /usr/local/.ghcup \
+            /usr/share/swift /opt/az /usr/local/aws-cli /opt/microsoft \
+            /usr/local/share/powershell /usr/lib/mono
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get clean
+          command -v zstd >/dev/null || sudo apt-get install -y zstd
+          echo "free after: $(df -BG --output=avail / | tail -1 | awk '{print $1}')"
+
+      - name: Checkout the build scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          clean: false   # chromium/ from the cache lives in the same workspace
+
+      - name: Restore the cached checkout
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          generation=0
+          if [ "${{ inputs.action }}" = "continue" ] \
+             && gh release view build-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir -p cache
+            gh release download build-cache --repo "$GITHUB_REPOSITORY" \
+              --pattern manifest.txt --dir cache --clobber || true
+            if [ ! -f cache/manifest.txt ]; then
+              echo "::notice::the build-cache release has no manifest yet; starting cold"
+              echo "generation=0" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            cached_commit=$(sed -n 's/^commit=//p' cache/manifest.txt)
+            generation=$(sed -n 's/^generation=//p' cache/manifest.txt)
+            parts=$(sed -n 's/^parts=//p' cache/manifest.txt)
+            tag=$(printf 'g%03d' "$generation")
+            if [ "$cached_commit" != "$GITHUB_SHA" ]; then
+              echo "::notice::the cache was built from $cached_commit, this job builds $GITHUB_SHA; starting cold"
+            else
+              echo "restoring $tag ($parts parts)"
+              gh release download build-cache --repo "$GITHUB_REPOSITORY" \
+                --pattern "${tag}-part-*" --dir cache --clobber
+              found=$(find cache -maxdepth 1 -name "${tag}-part-*" | wc -l)
+              if [ "$found" -ne "$parts" ]; then
+                echo "::error::cache generation $tag is incomplete: $found of $parts parts"
+                exit 1
+              fi
+              find cache -maxdepth 1 -name "${tag}-part-*" | sort | xargs cat \
+                | tar -I zstd -xf - -C "$GITHUB_WORKSPACE"
+              rm -f cache/"${tag}"-part-*
+              echo "restored: $(du -sh chromium | cut -f1)"
+            fi
+            rm -f cache/manifest.txt
+          fi
+          echo "generation=$generation" >> "$GITHUB_OUTPUT"
+          df -h /
+
+      - name: Build for this session
+        id: build
+        continue-on-error: true
+        timeout-minutes: 300
+        env:
+          BUILD_ABIS: arm64
+          BUILD_BUNDLE: "false"
+          SIGN_RELEASE: "false"
+          SYMBOL_LEVEL: "0"
+          RESUME: "1"
+        run: |
+          set -o pipefail
+          budget="${{ inputs.build_minutes }}"
+          case "$budget" in
+            ''|*[!0-9]*) echo "::error::build_minutes must be a number of minutes" >&2; exit 2 ;;
+          esac
+          # SIGINT reaches autoninja's whole process group, so ninja stops with a
+          # consistent out/ instead of being killed at the job's own timeout.
+          timeout --signal=INT --kill-after=120s "${budget}m" \
+            ./build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          if [ "$status" = "124" ]; then
+            echo "::notice::the session budget expired; the build was stopped and the tree will be cached"
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Report progress
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f build.log ]; then
+            last=$(grep -oE '\[[0-9]+/[0-9]+\]' build.log | tail -1 || true)
+            echo "last ninja counter: ${last:-not reached}"
+            tail -n 20 build.log
+          fi
+          df -h /
+
+      - name: Upload the APK
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: titanium-arm64-unsigned
+          path: chromium/src/out/release/*-unsigned.apk
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Save the cached checkout
+        if: always()
+        timeout-minutes: 80
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          if compgen -G "chromium/src/out/release/*-unsigned.apk" >/dev/null; then
+            echo "::notice::the APK exists, so this chain is done; leaving the cache alone"
+            exit 0
+          fi
+          if [ ! -d chromium/src/out/Default ]; then
+            echo "::warning::no Chromium checkout in the workspace; nothing to cache"
+            exit 0
+          fi
+          previous='${{ steps.restore.outputs.generation }}'
+          generation=$(( ${previous:-0} + 1 ))
+          tag=$(printf 'g%03d' "$generation")
+          rm -rf cache
+          mkdir -p cache
+          tar -I 'zstd -1 -T0' -cf cache/tree.tar.zst chromium
+          split -b 1500M -d -a 3 cache/tree.tar.zst "cache/${tag}-part-"
+          rm -f cache/tree.tar.zst
+          parts=$(find cache -maxdepth 1 -name "${tag}-part-*" | wc -l)
+          echo "cache ${tag}: ${parts} parts, $(du -sh cache | cut -f1)"
+          gh release view build-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create build-cache --repo "$GITHUB_REPOSITORY" \
+                 --title "Build cache (internal)" \
+                 --notes "Machine-generated Chromium build cache for the chained build. Not a release; do not download." \
+                 --prerelease
+          # A reset reuses generation numbers, and a leftover part from a larger
+          # earlier upload would break the part count on the next restore.
+          gh release view build-cache --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' 2>/dev/null \
+            | grep -E "^${tag}-part-" \
+            | while read -r old; do
+                gh release delete-asset build-cache "$old" --repo "$GITHUB_REPOSITORY" --yes >/dev/null
+              done || true
+          gh release upload build-cache cache/"${tag}"-part-* --repo "$GITHUB_REPOSITORY" --clobber
+          # The manifest is written last: a half-uploaded generation is never
+          # advertised, so a later job either restores the previous one or fails
+          # on the part count instead of extracting a truncated tar.
+          printf 'generation=%d\nparts=%d\ncommit=%s\n' "$generation" "$parts" "$GITHUB_SHA" \
+            > cache/manifest.txt
+          gh release upload build-cache cache/manifest.txt --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view build-cache --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' \
+            | grep -E '^g[0-9]{3}-part-' | grep -v "^${tag}-" \
+            | while read -r stale; do
+                gh release delete-asset build-cache "$stale" --repo "$GITHUB_REPOSITORY" --yes >/dev/null
+              done || true
+          df -h /
+
+      - name: Report the session outcome
+        if: always()
+        run: |
+          set -euo pipefail
+          status='${{ steps.build.outputs.status }}'
+          if [ -z "$status" ]; then
+            echo "::warning::the build step produced no status; read the log above"
+            exit 0
+          fi
+          if [ "$status" = "0" ]; then
+            echo "this session completed the build"
+            exit 0
+          fi
+          if [ "$status" = "124" ]; then
+            echo "::notice::the session ended on its time budget; dispatch again with action=continue"
+            exit 0
+          fi
+          echo "::error::the build failed on its own error (status $status); the cached tree was kept, so a fix to build.sh or args.gn resumes from it"
+          exit 1
