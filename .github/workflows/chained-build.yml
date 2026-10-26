@@ -63,7 +63,8 @@ jobs:
       - name: Checkout the build scripts
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          clean: false   # chromium/ from the cache lives in the same workspace
+          clean: false              # chromium/ from the cache lives in the same workspace
+          submodules: recursive     # vanadium/args.gn and vanadium/patches drive build.sh
 
       - name: Restore the cached checkout
         id: restore
@@ -119,6 +120,9 @@ jobs:
           RESUME: "1"
         run: |
           set -o pipefail
+          # The runner invokes this as `bash -e`, so the failed pipeline below
+          # would end the step before its status is recorded.
+          set +e
           budget="${{ inputs.build_minutes }}"
           case "$budget" in
             ''|*[!0-9]*) echo "::error::build_minutes must be a number of minutes" >&2; exit 2 ;;
