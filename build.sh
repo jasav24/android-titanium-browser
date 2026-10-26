@@ -101,7 +101,7 @@ mkdir -p chromium/src
 cd chromium/src
 
 resume=0
-if [ "$RESUME" = "1" ] && [ -d out/Default ]; then
+if [ "$RESUME" = "1" ] && [ -f out/Default/.titanium-prepared ]; then
     resume=1
     echo "::notice::resuming the cached checkout in $PWD: skipping fetch, patches, runhooks and patch.sh"
 fi
@@ -158,6 +158,10 @@ if [ "$resume" = "0" ]; then
              echo "  tool, bzip2 for the AFDO profile hook, and is fixed by the" >&2; \
              echo "  apt-get install above." >&2; \
              exit 1; }
+
+    # Marked only now: out/Default exists from the first line of this branch, and
+    # a job killed during the sync would otherwise look ready to resume.
+    : > out/Default/.titanium-prepared
 fi
 
 # Runs in both paths: a resumed tree is on a fresh OS image, so the host

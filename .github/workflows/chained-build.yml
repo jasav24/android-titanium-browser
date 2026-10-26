@@ -167,8 +167,8 @@ jobs:
             echo "::notice::the APK exists, so this chain is done; leaving the cache alone"
             exit 0
           fi
-          if [ ! -d chromium/src/out/Default ]; then
-            echo "::warning::no Chromium checkout in the workspace; nothing to cache"
+          if [ ! -f chromium/src/out/Default/.titanium-prepared ]; then
+            echo "::warning::the checkout is not prepared (an unfinished sync); nothing to cache"
             exit 0
           fi
           previous='${{ steps.restore.outputs.generation }}'
