@@ -58,8 +58,7 @@ on:
         default: "2000"
 
 permissions:
-  contents: write    # the cache is stored as assets on the `build-cache` release
-  workflows: write   # queueing the next session is a workflow_dispatch call
+  contents: write   # the cache is stored as assets on the `build-cache` release
 
 concurrency:
   group: chained-build
