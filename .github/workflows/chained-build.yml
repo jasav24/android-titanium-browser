@@ -107,6 +107,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # GitHub's release-asset CDN resets long downloads at random, and one
+          # reset used to kill a whole session 45 s into a 6-minute restore:
+          #   read tcp 10.1.0.202:38188->185.199.109.133:443: read: connection reset by peer
+          # A 14-part archive is 14 chances to hit that, so every asset transfer
+          # is retried instead of failing the job.
+          retry() {
+            local n=0
+            until "$@"; do
+              n=$((n + 1))
+              if [ "$n" -ge 5 ]; then
+                echo "::error::gave up after $n attempts: $*" >&2
+                return 1
+              fi
+              echo "attempt $n failed for: $* (retrying in $((n * 20))s)" >&2
+              sleep $((n * 20))
+            done
+          }
           generation=0
           pending=''
           case '${{ inputs.action }}' in
@@ -116,7 +133,7 @@ jobs:
           if [ "$resume_cache" = "true" ] \
              && gh release view build-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             mkdir -p cache
-            gh release download build-cache --repo "$GITHUB_REPOSITORY" \
+            retry gh release download build-cache --repo "$GITHUB_REPOSITORY" \
               --pattern manifest.txt --dir cache --clobber || true
             if [ ! -f cache/manifest.txt ]; then
               echo "::notice::the build-cache release has no manifest yet; starting cold"
@@ -151,8 +168,14 @@ jobs:
             fi
             if [ "$restore" = "true" ]; then
               echo "restoring $tag ($parts parts, built from $cached_commit)"
-              gh release download build-cache --repo "$GITHUB_REPOSITORY" \
-                --pattern "${tag}-part-*" --dir cache --clobber
+              # One pattern download would restart all 1500M parts from zero on a
+              # reset, so each part is fetched and re-fetched on its own.
+              for p in $(seq -f '%03g' 0 $((parts - 1))); do
+                while [ ! -s "cache/${tag}-part-${p}" ]; do
+                  retry gh release download build-cache --repo "$GITHUB_REPOSITORY" \
+                    --pattern "${tag}-part-${p}" --dir cache --clobber
+                done
+              done
               found=$(find cache -maxdepth 1 -name "${tag}-part-*" | wc -l)
               if [ "$found" -ne "$parts" ]; then
                 echo "::error::cache generation $tag is incomplete: $found of $parts parts"
@@ -314,6 +337,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Same CDN resets as the restore side; see the retry() there.
+          retry() {
+            local n=0
+            until "$@"; do
+              n=$((n + 1))
+              if [ "$n" -ge 5 ]; then
+                echo "::error::gave up after $n attempts: $*" >&2
+                return 1
+              fi
+              echo "attempt $n failed for: $* (retrying in $((n * 20))s)" >&2
+              sleep $((n * 20))
+            done
+          }
           cd "$GITHUB_WORKSPACE"
           if compgen -G "chromium/src/out/release/*-unsigned.apk" >/dev/null; then
             echo "::notice::the APK exists, so this chain is done; leaving the cache alone"
@@ -355,7 +391,9 @@ jobs:
             | while read -r old; do
                 gh release delete-asset build-cache "$old" --repo "$GITHUB_REPOSITORY" --yes >/dev/null
               done || true
-          gh release upload build-cache cache/"${tag}"-part-* --repo "$GITHUB_REPOSITORY" --clobber
+          for f in cache/"${tag}"-part-*; do
+            retry gh release upload build-cache "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
           # The manifest is written last: a half-uploaded generation is never
           # advertised, so a later job either restores the previous one or fails
           # on the part count instead of extracting a truncated tar.
