@@ -197,6 +197,29 @@ jobs:
           echo "prepared=$prepared  newest=$newest"
           ls -la --time-style=+%Y-%m-%dT%H:%M "$outdir" 2>/dev/null | head -25
           du -sh "$outdir" 2>/dev/null
+          # siso writes its dirty-reason log into the output dir, and the tree
+          # carries eight generations of it. That file names the reason every
+          # resumed session rebuilds the same objects, so read it before
+          # changing anything else.
+          echo "--- siso log files ---"
+          stat -c '%n %s %y' "$outdir"/siso_explain* "$outdir"/siso_result.json \
+            "$outdir"/siso_metadata.json "$outdir"/.siso_fs_state* 2>/dev/null
+          ex=$outdir/siso_explain
+          if [ -f "$ex" ]; then
+            echo "--- explain head ---"
+            head -n 40 "$ex"
+            echo "--- explain reason tally (last 200000 lines) ---"
+            tail -n 200000 "$ex" | sed -e 's/.* because //' -e 's/[0-9a-f]\{16,\}/HASH/g' \
+              | sort | uniq -c | sort -rn | head -n 12
+            echo "--- explain lines naming an .o ---"
+            grep -a '\.o' "$ex" | head -n 15
+          fi
+          echo "--- siso_result.json ---"
+          head -c 1200 "$outdir/siso_result.json" 2>/dev/null
+          echo
+          echo "--- how the build was invoked ---"
+          head -c 900 "$outdir/siso_metadata.json" 2>/dev/null
+          echo
           df -h /
 
       - name: Build for this session
