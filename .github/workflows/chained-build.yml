@@ -218,11 +218,28 @@ jobs:
           if [ -f "$ex" ]; then
             echo "--- explain head ---"
             head -n 40 "$ex"
-            echo "--- explain reason tally (last 200000 lines) ---"
-            tail -n 200000 "$ex" | sed -e 's/.* because //' -e 's/[0-9a-f]\{16,\}/HASH/g' \
-              | sort | uniq -c | sort -rn | head -n 12
-            echo "--- explain lines naming an .o ---"
-            grep -a '\.o' "$ex" | head -n 15
+            # The reason lines carry a unique mtime and a unique target name, so
+            # an unnormalised `uniq -c` returns 1 for everything. Collapse both
+            # before counting.
+            echo "--- explain reason tally (newest rotation) ---"
+            sed -e 's/"[^"]*"/NAME/g' -e 's/deps for [^ ]*/deps for TARGET/g' \
+                -e 's/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9:.+]* UTC/TS/g' \
+                "$ex" | cut -c1-100 | sort | uniq -c | sort -rn | head -n 12
+            # siso rotates this log once per session, so each file is one
+            # session's verdict on the tree it resumed. Comparing the counts down
+            # the rotations is the before/after for the archive mtime fix.
+            echo "--- explain per rotation ---"
+            per=/tmp/explain-per.txt
+            : > "$per"
+            for f in "$outdir"/siso_explain*; do
+              [ -f "$f" ] || continue
+              lines=$(wc -l < "$f")
+              stale=$(grep -ac 'older than log' "$f" || true)
+              printf '%s %s lines=%s olderThanLog=%s\n' \
+                "$(date -u -r "$f" +%m%d%H%M)" "$(basename "$f")" "$lines" "${stale:-?}" >> "$per"
+            done
+            sort -r "$per" | sed 's/^[0-9]* //' | tr '\n' ';' | cut -c1-900
+            echo "::notice::explain per rotation (newest first): $(sort -r "$per" | sed 's/^[0-9]* //' | tr '\n' ';' | cut -c1-900)"
           fi
           echo "--- siso_result.json ---"
           head -c 1200 "$outdir/siso_result.json" 2>/dev/null
