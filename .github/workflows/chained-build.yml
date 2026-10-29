@@ -9,9 +9,15 @@ name: Chained build
 #                -> re-upload chromium/ -> dispatch again
 #
 # chromium/ carries both the patched source and out/Default, which is what lets
-# the next job's ninja continue instead of starting over. Dispatch the workflow
-# again with action=continue until the titanium-arm64-unsigned artifact appears.
-# action=reset ignores the cache and builds from scratch.
+# the next job's ninja continue instead of starting over. The last step queues
+# the next session on its own, so one dispatch runs the whole chain until the
+# titanium-arm64-unsigned artifact appears. action=reset ignores the cache and
+# builds from scratch; auto_chain=false leaves queueing to you.
+#
+# Progress is checked between sessions: the pending-target count each session
+# reports is stored in the cache manifest, and a session that removes less than
+# min_progress of them stops the chain instead of re-building the same objects
+# for another five hours.
 #
 # The APK this produces is unsigned; SIGN_RELEASE=false keeps the release
 # keystore out of a runner that is not a build host under your control.
@@ -28,13 +34,32 @@ on:
           - reset
         default: continue
       build_minutes:
-        description: "Minutes of compilation this job may attempt (keep at or below 260)"
+        description: "Minutes of compilation this job may attempt (keep at or below 300)"
         required: true
         type: string
-        default: "240"
+        default: "300"
+      auto_chain:
+        description: "Queue the next session automatically when this one ends without an APK"
+        required: true
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+      max_sessions:
+        description: "Stop the chain after this many sessions since the last cold build"
+        required: true
+        type: string
+        default: "24"
+      min_progress:
+        description: "Fewest pending targets a session must clear before the chain is queued again"
+        required: true
+        type: string
+        default: "2000"
 
 permissions:
-  contents: write   # the cache is stored as assets on the `build-cache` release
+  contents: write    # the cache is stored as assets on the `build-cache` release
+  workflows: write   # queueing the next session is a workflow_dispatch call
 
 concurrency:
   group: chained-build
@@ -87,6 +112,7 @@ jobs:
             cached_recipe=$(sed -n 's/^recipe=//p' cache/manifest.txt)
             generation=$(sed -n 's/^generation=//p' cache/manifest.txt)
             parts=$(sed -n 's/^parts=//p' cache/manifest.txt)
+            pending=$(sed -n 's/^remaining=//p' cache/manifest.txt)
             tag=$(printf 'g%03d' "$generation")
             # The tree is reusable only when the inputs that shape it are the
             # same: the patch series, args.gn, .gclient and the vanadium
@@ -121,16 +147,22 @@ jobs:
                 | tar -I zstd -xf - -C "$GITHUB_WORKSPACE"
               rm -f cache/"${tag}"-part-*
               echo "restored: $(du -sh chromium | cut -f1)"
+              # The two numbers that say whether the cache carried work forward:
+              # compiled objects and ninja's own record of what it built.
+              echo "objects in the resumed tree: $(find chromium/src/out -name '*.o' 2>/dev/null | wc -l)"
+              echo "ninja log lines: $(wc -l < chromium/src/out/Default/.ninja_log 2>/dev/null || echo 0)"
+              echo "build state files: $(ls -a chromium/src/out/Default 2>/dev/null | grep -E '^\.(ninja|siso)' | tr '\n' ' ')"
             fi
             rm -f cache/manifest.txt
           fi
           echo "generation=$generation" >> "$GITHUB_OUTPUT"
+          echo "pending=${pending:-}" >> "$GITHUB_OUTPUT"
           df -h /
 
       - name: Build for this session
         id: build
         continue-on-error: true
-        timeout-minutes: 300
+        timeout-minutes: 320
         env:
           BUILD_ABIS: arm64
           BUILD_BUNDLE: "false"
@@ -159,12 +191,18 @@ jobs:
           exit "$status"
 
       - name: Report progress
+        id: progress
         if: always()
         run: |
           set -euo pipefail
           if [ -f build.log ]; then
             last=$(grep -oE '\[[0-9]+/[0-9]+\]' build.log | tail -1 || true)
             echo "last ninja counter: ${last:-not reached}"
+            # siso's own tally is the only cross-session progress signal: this is
+            # how many targets were still pending when the budget ran out.
+            summary=$(grep -oE '[0-9]+ done, [0-9]+ failed, [0-9]+ remaining' build.log | tail -1 || true)
+            echo "siso summary: ${summary:-none}"
+            echo "remaining=$(printf '%s' "$summary" | awk '{print $5}')" >> "$GITHUB_OUTPUT"
             tail -n 20 build.log
           fi
           df -h /
@@ -199,6 +237,7 @@ jobs:
           tag=$(printf 'g%03d' "$generation")
           rm -rf cache
           mkdir -p cache
+          echo "objects about to be cached: $(find chromium/src/out -name '*.o' 2>/dev/null | wc -l)"
           tar -I 'zstd -1 -T0' -cf cache/tree.tar.zst chromium
           split -b 1500M -d -a 3 cache/tree.tar.zst "cache/${tag}-part-"
           rm -f cache/tree.tar.zst
@@ -226,8 +265,9 @@ jobs:
               git -C vanadium rev-parse HEAD 2>/dev/null || echo no-vanadium
             } | sha256sum | cut -d' ' -f1
           )
-          printf 'generation=%d\nparts=%d\ncommit=%s\nrecipe=%s\n' \
-            "$generation" "$parts" "$GITHUB_SHA" "$recipe" > cache/manifest.txt
+          printf 'generation=%d\nparts=%d\ncommit=%s\nrecipe=%s\nremaining=%s\n' \
+            "$generation" "$parts" "$GITHUB_SHA" "$recipe" \
+            "${{ steps.progress.outputs.remaining }}" > cache/manifest.txt
           gh release upload build-cache cache/manifest.txt --repo "$GITHUB_REPOSITORY" --clobber
           gh release view build-cache --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' \
@@ -251,8 +291,53 @@ jobs:
             exit 0
           fi
           if [ "$status" = "124" ]; then
-            echo "::notice::the session ended on its time budget; dispatch again with action=continue"
+            echo "::notice::the session ended on its time budget; the next one is queued below"
             exit 0
           fi
           echo "::error::the build failed on its own error (status $status); the cached tree was kept, so a fix to build.sh or args.gn resumes from it"
           exit 1
+
+      # Only a budget cut-off chains on. A build that failed on its own error
+      # would fail the same way in the next session, so the job stays red and
+      # waits for a fix.
+      - name: Queue the next session
+        if: always() && steps.build.outputs.status == '124'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for n in '${{ inputs.max_sessions }}' '${{ inputs.min_progress }}' '${{ inputs.build_minutes }}'; do
+            case "$n" in ''|*[!0-9]*) echo "::error::$n is not a number of minutes or sessions" >&2; exit 2 ;; esac
+          done
+          if compgen -G "chromium/src/out/release/*-unsigned.apk" >/dev/null; then
+            echo "the APK exists, so there is nothing left to queue"
+            exit 0
+          fi
+          if [ '${{ inputs.auto_chain }}' != "true" ]; then
+            echo "::notice::auto_chain=false; dispatch action=continue when you want the next session"
+            exit 0
+          fi
+          pending='${{ steps.progress.outputs.remaining }}'
+          previous='${{ steps.restore.outputs.pending }}'
+          # A manifest from before this field existed carries no count, so the
+          # first chained session after the change is not judged against it.
+          if [ -n "$pending" ] && [ -n "$previous" ] && [ "$previous" -gt 0 ]; then
+            gained=$(( previous - pending ))
+            if [ "$gained" -lt '${{ inputs.min_progress }}' ]; then
+              echo "::error::this session cleared only $gained of $previous pending targets, so the cached tree is not carrying work forward; the chain is stopped. Compare 'objects in the resumed tree' with 'objects about to be cached' above to see what the next job loses."
+              exit 1
+            fi
+            echo "progress: $previous -> $pending pending targets ($gained cleared)"
+          fi
+          gen='${{ steps.restore.outputs.generation }}'
+          next=$(( ${gen:-0} + 1 ))
+          if [ "$next" -gt '${{ inputs.max_sessions }}' ]; then
+            echo "::error::stopped after $next sessions without an APK; raise max_sessions or fix the build"
+            exit 1
+          fi
+          gh workflow run chained-build.yml --repo "$GITHUB_REPOSITORY" \
+            -f action=continue \
+            -f build_minutes='${{ inputs.build_minutes }}' \
+            -f max_sessions='${{ inputs.max_sessions }}' \
+            -f min_progress='${{ inputs.min_progress }}'
+          echo "queued session $next with action=continue"
