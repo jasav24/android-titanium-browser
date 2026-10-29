@@ -186,18 +186,34 @@ fi
 if [ "$resume" = "0" ]; then
     source "$SCRIPT_DIR/patch.sh"
 fi
-cp "$SCRIPT_DIR/args.gn" out/Default/args.gn
+
+# out/Default/args.gn is replaced, and gn gen re-run, only when the args really
+# changed. Both cp and sed -i re-stamp the file, build.ninja.stamp lists
+# args.gn as an input, and build.ninja itself is an input to ACTION edges, so
+# an unconditional rewrite makes build.ninja newer than outputs that read it:
+#   output gen/.../about_credits.html older than most recent input build.ninja
+# On a resumed tree that is a rebuild of work already done.
+wanted=$(mktemp)
+cp "$SCRIPT_DIR/args.gn" "$wanted"
 if [ -n "$SYMBOL_LEVEL" ]; then
-    if grep -q '^symbol_level = ' out/Default/args.gn; then
-        sed -i -E "s/^symbol_level = .*/symbol_level = ${SYMBOL_LEVEL}/" out/Default/args.gn
+    if grep -q '^symbol_level = ' "$wanted"; then
+        sed -i -E "s/^symbol_level = .*/symbol_level = ${SYMBOL_LEVEL}/" "$wanted"
     else
-        echo "symbol_level = ${SYMBOL_LEVEL}" >> out/Default/args.gn
+        echo "symbol_level = ${SYMBOL_LEVEL}" >> "$wanted"
     fi
 fi
 if ! printf '%s\n' "$BUILD_ABIS" | tr ' ' '\n' | grep -qx arm; then
-    sed -i 's/^target_cpu = "arm"$/target_cpu = "arm64"/' out/Default/args.gn
+    sed -i 's/^target_cpu = "arm"$/target_cpu = "arm64"/' "$wanted"
 fi
-gn gen out/Default # gn args out/Default; echo 'treat_warnings_as_errors = false' >> out/Default/args.gn
+mkdir -p out/Default
+if [ "$resume" = "1" ] && [ -f out/Default/build.ninja ] \
+   && cmp -s "$wanted" out/Default/args.gn; then
+    rm -f "$wanted"
+    echo "out/Default/args.gn is unchanged and build.ninja exists; skipping gn gen"
+else
+    mv "$wanted" out/Default/args.gn
+    gn gen out/Default
+fi
 mkdir -p out/tmp out/release
 
 stage_apk() {
@@ -218,7 +234,12 @@ for abi in $BUILD_ABIS; do
             stage_apk armeabi-v7a
             ;;
         arm64)
-            sed -i 's/^target_cpu = "arm"$/target_cpu = "arm64"/' out/Default/args.gn
+            # Only rewritten when this is the second pass of a multi-ABI build;
+            # sed -i re-stamps args.gn even when nothing matches, and with
+            # BUILD_ABIS=arm64 the file already says arm64 from the block above.
+            if grep -q '^target_cpu = "arm"$' out/Default/args.gn; then
+                sed -i 's/^target_cpu = "arm"$/target_cpu = "arm64"/' out/Default/args.gn
+            fi
             targets=(chrome_public_apk)
             if [ "$BUILD_BUNDLE" = "true" ]; then
                 targets+=(chrome_public_bundle)

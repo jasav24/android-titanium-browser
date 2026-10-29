@@ -156,8 +156,10 @@ jobs:
               echo "restored: $(du -sh chromium | cut -f1)"
               # The two numbers that say whether the cache carried work forward.
               # Written as annotations: a running job's log is not readable from
-              # the API, but its annotations are.
-              echo "::notice::resumed tree objects=$(find chromium/src/out -name '*.o' 2>/dev/null | wc -l) ninjaLog=$(wc -l < chromium/src/out/Default/.ninja_log 2>/dev/null || echo 0) state=$(ls -a chromium/src/out/Default 2>/dev/null | grep -E '^\.(ninja|siso)' | tr '\n' ' ')"
+              # the API, but its annotations are. subSecondObjects is the proof
+              # that the archive preserved mtime precision; if it is 0, siso
+              # will consider every restored object stale again.
+              echo "::notice::resumed tree objects=$(find chromium/src/out -name '*.o' 2>/dev/null | wc -l) ninjaLog=$(wc -l < chromium/src/out/Default/.ninja_log 2>/dev/null || echo 0) subSecondObjects=$( { find chromium/src/out/Default/obj -name '*.o' -printf '%.9T@\n' 2>/dev/null | grep -vc '\.000000000$'; } || true) state=$(ls -a chromium/src/out/Default 2>/dev/null | grep -E '^\.(ninja|siso)' | tr '\n' ' ')"
             fi
             rm -f cache/manifest.txt
           fi
@@ -302,7 +304,15 @@ jobs:
           rm -rf cache
           mkdir -p cache
           echo "::notice::cached tree objects=$(find chromium/src/out -name '*.o' 2>/dev/null | wc -l)"
-          tar -I 'zstd -1 -T0' -cf cache/tree.tar.zst chromium
+          # --format=pax is the whole fix for the stalled chain. GNU tar's
+          # default format stores mtimes to the whole second, but siso's deps
+          # log records them to the nanosecond, so every restored object
+          # looked *older than its own log entry* and was rebuilt:
+          #   stale deps in depslog: output mtime "..." older than log:
+          #   fs=2026-10-28 10:25:19 +0000 UTC depslog=...10:25:19.079711493
+          # PAX headers carry the fractional seconds, so the next job's siso
+          # finds the tree exactly as this one left it.
+          tar --format=pax -I 'zstd -1 -T0' -cf cache/tree.tar.zst chromium
           split -b 1500M -d -a 3 cache/tree.tar.zst "cache/${tag}-part-"
           rm -f cache/tree.tar.zst
           parts=$(find cache -maxdepth 1 -name "${tag}-part-*" | wc -l)
