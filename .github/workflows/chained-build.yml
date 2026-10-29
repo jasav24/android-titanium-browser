@@ -146,11 +146,10 @@ jobs:
                 | tar -I zstd -xf - -C "$GITHUB_WORKSPACE"
               rm -f cache/"${tag}"-part-*
               echo "restored: $(du -sh chromium | cut -f1)"
-              # The two numbers that say whether the cache carried work forward:
-              # compiled objects and ninja's own record of what it built.
-              echo "objects in the resumed tree: $(find chromium/src/out -name '*.o' 2>/dev/null | wc -l)"
-              echo "ninja log lines: $(wc -l < chromium/src/out/Default/.ninja_log 2>/dev/null || echo 0)"
-              echo "build state files: $(ls -a chromium/src/out/Default 2>/dev/null | grep -E '^\.(ninja|siso)' | tr '\n' ' ')"
+              # The two numbers that say whether the cache carried work forward.
+              # Written as annotations: a running job's log is not readable from
+              # the API, but its annotations are.
+              echo "::notice::resumed tree objects=$(find chromium/src/out -name '*.o' 2>/dev/null | wc -l) ninjaLog=$(wc -l < chromium/src/out/Default/.ninja_log 2>/dev/null || echo 0) state=$(ls -a chromium/src/out/Default 2>/dev/null | grep -E '^\.(ninja|siso)' | tr '\n' ' ')"
             fi
             rm -f cache/manifest.txt
           fi
@@ -200,7 +199,7 @@ jobs:
             # siso's own tally is the only cross-session progress signal: this is
             # how many targets were still pending when the budget ran out.
             summary=$(grep -oE '[0-9]+ done, [0-9]+ failed, [0-9]+ remaining' build.log | tail -1 || true)
-            echo "siso summary: ${summary:-none}"
+            echo "::notice::${summary:-no siso summary in the log}"
             echo "remaining=$(printf '%s' "$summary" | awk '{print $5}')" >> "$GITHUB_OUTPUT"
             tail -n 20 build.log
           fi
@@ -236,7 +235,7 @@ jobs:
           tag=$(printf 'g%03d' "$generation")
           rm -rf cache
           mkdir -p cache
-          echo "objects about to be cached: $(find chromium/src/out -name '*.o' 2>/dev/null | wc -l)"
+          echo "::notice::cached tree objects=$(find chromium/src/out -name '*.o' 2>/dev/null | wc -l)"
           tar -I 'zstd -1 -T0' -cf cache/tree.tar.zst chromium
           split -b 1500M -d -a 3 cache/tree.tar.zst "cache/${tag}-part-"
           rm -f cache/tree.tar.zst
@@ -323,10 +322,10 @@ jobs:
           if [ -n "$pending" ] && [ -n "$previous" ] && [ "$previous" -gt 0 ]; then
             gained=$(( previous - pending ))
             if [ "$gained" -lt '${{ inputs.min_progress }}' ]; then
-              echo "::error::this session cleared only $gained of $previous pending targets, so the cached tree is not carrying work forward; the chain is stopped. Compare 'objects in the resumed tree' with 'objects about to be cached' above to see what the next job loses."
+              echo "::error::this session cleared only $gained of $previous pending targets, so the resumed tree is not carrying work forward; the chain is stopped. Compare the 'resumed tree objects' annotation of this run with its 'cached tree objects' annotation to see what the next job loses."
               exit 1
             fi
-            echo "progress: $previous -> $pending pending targets ($gained cleared)"
+            echo "::notice::progress $previous -> $pending pending targets ($gained cleared)"
           fi
           gen='${{ steps.restore.outputs.generation }}'
           next=$(( ${gen:-0} + 1 ))
