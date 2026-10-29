@@ -26,12 +26,13 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "continue from the cached checkout, or reset and build from scratch"
+        description: "continue from the cached checkout, reset and build from scratch, or probe the cache without building"
         required: true
         type: choice
         options:
           - continue
           - reset
+          - probe
         default: continue
       build_minutes:
         description: "Minutes of compilation this job may attempt (keep at or below 300)"
@@ -61,7 +62,9 @@ permissions:
   contents: write   # the cache is stored as assets on the `build-cache` release
 
 concurrency:
-  group: chained-build
+  # Every mutating action shares one group so two sessions cannot write the
+  # cache at once; the read-only probe is allowed to run alongside a build.
+  group: chained-build-${{ inputs.action == 'probe' && 'probe' || 'build' }}
   cancel-in-progress: false
 
 jobs:
@@ -97,7 +100,12 @@ jobs:
         run: |
           set -euo pipefail
           generation=0
-          if [ "${{ inputs.action }}" = "continue" ] \
+          pending=''
+          case '${{ inputs.action }}' in
+            continue|probe) resume_cache=true ;;
+            *) resume_cache=false ;;
+          esac
+          if [ "$resume_cache" = "true" ] \
              && gh release view build-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             mkdir -p cache
             gh release download build-cache --repo "$GITHUB_REPOSITORY" \
@@ -157,8 +165,43 @@ jobs:
           echo "pending=${pending:-}" >> "$GITHUB_OUTPUT"
           df -h /
 
+      # Read-only: answers where siso keeps its build state and whether the
+      # archive carries it. Nothing here compiles, saves the cache, or chains.
+      - name: Inspect the cached tree
+        if: inputs.action == 'probe'
+        run: |
+          # A diagnostic: every line must report, so no failed probe may abort
+          # the step. The runner starts bash with -e; turn it back off.
+          set +e
+          set -u
+          cd "$GITHUB_WORKSPACE"
+          outdir=chromium/src/out/Default
+          nlog=$outdir/.ninja_log
+          objects=$(find chromium/src/out -name '*.o' 2>/dev/null | wc -l)
+          rows=$( [ -f "$nlog" ] && wc -l < "$nlog" || echo absent )
+          logged=$( [ -f "$nlog" ] && tail -n +2 "$nlog" | cut -f1 | sort -u | wc -l || echo 0 )
+          newer=$( [ -f "$nlog" ] && find "$outdir/obj" -name '*.o' -newer "$nlog" 2>/dev/null | wc -l || echo 0 )
+          logstamp=$( [ -f "$nlog" ] && date -u -r "$nlog" +%Y-%m-%dT%H:%M:%SZ || echo absent )
+          newest=$(find "$outdir/obj" -name '*.o' -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)
+          neweststamp=$( [ -n "$newest" ] && date -u -r "$newest" +%Y-%m-%dT%H:%M:%SZ || echo none )
+          prepared=$( [ -f "$outdir/.titanium-prepared" ] && echo yes || echo no )
+          state=$(ls -a "$outdir" 2>/dev/null | grep -E '^(\.|siso)' | tr '\n' ' ')
+          outside=$(find "$HOME" /tmp -maxdepth 5 \( -iname '*siso*' -o -name '.ninja_log' \) 2>/dev/null | head -12 | tr '\n' ' ')
+          echo "::notice::probe objects=$objects ninjaLogRows=$rows ninjaLogOutputs=$logged objectsNewerThanLog=$newer"
+          echo "::notice::probe logMtime=$logstamp newestObjectMtime=$neweststamp prepared=$prepared"
+          echo "::notice::probe outDefaultState=$state"
+          echo "::notice::probe stateOutsideTree=${outside:-none}"
+          if [ "$objects" = "0" ]; then
+            echo "::error::the restored tree contains no object files, so the archive is not carrying out/"
+          fi
+          echo "prepared=$prepared  newest=$newest"
+          ls -la --time-style=+%Y-%m-%dT%H:%M "$outdir" 2>/dev/null | head -25
+          du -sh "$outdir" 2>/dev/null
+          df -h /
+
       - name: Build for this session
         id: build
+        if: inputs.action != 'probe'
         continue-on-error: true
         timeout-minutes: 320
         env:
@@ -215,7 +258,7 @@ jobs:
           retention-days: 14
 
       - name: Save the cached checkout
-        if: always()
+        if: always() && inputs.action != 'probe'
         timeout-minutes: 80
         env:
           GH_TOKEN: ${{ github.token }}
