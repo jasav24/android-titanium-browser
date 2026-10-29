@@ -60,6 +60,14 @@ on:
 
 permissions:
   contents: write   # the cache is stored as assets on the `build-cache` release
+  # Without this the last step dies with
+  # "could not create workflow dispatch event: HTTP 403: Resource not
+  # accessible by integration": an explicit `permissions:` block above replaces
+  # the runner's default set, and the POST to /actions/workflows/.../dispatches
+  # is an Actions write, not a contents write. `workflows: write` is not a valid
+  # key here (the file itself would 422); `actions: write` is the one that
+  # authorises the self-dispatch.
+  actions: write
 
 concurrency:
   # Every mutating action shares one group so two sessions cannot write the
