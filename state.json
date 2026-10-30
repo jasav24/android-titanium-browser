@@ -2,22 +2,24 @@
   "schema_version": 1,
   "upstream": "jqssun/android-titanium-browser",
   "created_at": "2026-10-24T03:49:45Z",
-  "updated_at": "2026-10-30T04:06:36Z",
-  "last_scanned_sha": "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
+  "updated_at": "2026-10-30T18:45:58Z",
+  "last_scanned_sha": "5e9070a98b48f6b6cb239bf90b8718b91795b7c5",
   "processed_shas": [
-    "c21bc5ac921fd9da96c108b40afff202f6e8b0ba"
+    "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
+    "5e9070a98b48f6b6cb239bf90b8718b91795b7c5"
   ],
   "integrated_shas": [],
   "pending": [],
   "deferred": [],
   "candidate": {
-    "target_sha": "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
+    "target_sha": "5e9070a98b48f6b6cb239bf90b8718b91795b7c5",
     "shas": [
-      "c21bc5ac921fd9da96c108b40afff202f6e8b0ba"
+      "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
+      "5e9070a98b48f6b6cb239bf90b8718b91795b7c5"
     ],
     "risk": "high",
     "requires_full_build": true,
-    "created_at": "2026-10-30T04:06:36Z"
+    "created_at": "2026-10-30T18:45:58Z"
   },
   "history": [
     {
@@ -36,6 +38,18 @@
       "result": "changes",
       "included": [
         "c21bc5ac921fd9da96c108b40afff202f6e8b0ba"
+      ],
+      "pending": [],
+      "risk": "high"
+    },
+    {
+      "at": "2026-10-30T18:45:58Z",
+      "run_id": "41109660999",
+      "target_sha": "5e9070a98b48f6b6cb239bf90b8718b91795b7c5",
+      "result": "changes",
+      "included": [
+        "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
+        "5e9070a98b48f6b6cb239bf90b8718b91795b7c5"
       ],
       "pending": [],
       "risk": "high"
