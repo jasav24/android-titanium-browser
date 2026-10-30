@@ -21,12 +21,16 @@ find "${brand_string_roots[@]}" -type f \( -name '*.grd' -o -name '*.grdp' -o -n
   -e 's/__FLASH_EXTENSION_NAME__/Titanium Extension/g' {} +
 sed -i 's/\bTitanium\b/Flash Browser/g' chrome/android/java/res_titanium_base/values/channel_constants.xml
 
-# links: github in browser
-# When Chromium allows external navigation for http(s), a verified GitHub link
-# is handed to the installed GitHub app. Block only GitHub hosts here; other
-# sites, and Custom Tab auth result flows, keep their existing behavior.
-sed -i 's#return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#if (UrlUtilities.isHttpOrHttps(url) \&\& (url.getHost().equals("github.com") || url.getHost().endsWith(".github.com"))) return false;\n        return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java
-grep -qF 'url.getHost().endsWith(".github.com")' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java || { echo "links: patch did not apply; ExternalNavigationDelegateImpl changed upstream" >&2; exit 1; }
+# links: stay in browser
+# allowExternalNavigationForHttpProtocols() answers true for a phone, because its
+# only gate is the Desktop-Android link-capturing feature, so a navigation that
+# matches an installed app's verified link leaves Flash Browser for that app.
+# Answer false for every http(s) URL and the page always loads in a tab. The
+# caller keeps two exemptions of its own (ExternalNavigationHandler
+# shouldBlockExternalNavigationForHttpProtocols): a Custom Tab returning its auth
+# result to the app that opened it, and Play Store links, still leave the browser.
+sed -i 's#return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#if (UrlUtilities.isHttpOrHttps(url)) return false;\n        return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java
+grep -qF 'if (UrlUtilities.isHttpOrHttps(url)) return false;' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java || { echo "links: patch did not apply; ExternalNavigationDelegateImpl changed upstream" >&2; exit 1; }
 
 cp -r $SCRIPT_DIR/extensions/dist titanium/
 cp $SCRIPT_DIR/extensions/stage_bundled_extensions.inc titanium/dist/

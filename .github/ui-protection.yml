@@ -158,9 +158,9 @@ patch_sections:
     protection: "protected"
     reason: "Display-only Flash Browser rebranding of user-visible string resources."
 
-  - header: "links: github in browser"
+  - header: "links: stay in browser"
     protection: "protected"
-    reason: "Keeps github.com links in the browser instead of handing them to the installed GitHub app."
+    reason: "Keeps every http(s) navigation inside Flash Browser instead of handing verified app links to installed apps; Custom Tab auth results and Play Store links still leave."
 
   - header: "accessibility"
     protection: "review"
