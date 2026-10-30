@@ -90,16 +90,30 @@ flowchart TD
 
 ## Building
 
-Releases are built by the manual [**Release**](.github/workflows/release.yml)
-workflow. It builds the current default-branch tip with the release signing
-material, verifies the APK/AAB signatures, package id, version and checksums,
-runs a mandatory device smoke test, and creates a draft GitHub release. Nothing
-is published by default.
+The [**Chained build**](.github/workflows/chained-build.yml) workflow compiles
+the ARM64 `chrome_public_apk` across several dispatched jobs, carrying the
+prepared checkout and `out/Default` between them on the `build-cache` release.
+Start it once with `action=continue` and `auto_chain=true`: each session that
+runs out of time queues the next one, and the chain stops when an APK exists.
 
-Release signing material is supplied to the `release` environment as
-`RELEASE_KEYSTORE_B64` and `RELEASE_LOCAL_PROPERTIES_B64`; the archive is never
-committed to the repository. Runner labels, environments and the complete setup
-checklist are in [the automation guide](.github/automation/README.md#setup).
+The build job compiles with `SIGN_RELEASE=false`, so the release key never enters
+a six-hour unattended job. A session that ends with an APK uploads it as the
+`titanium-arm64-unsigned` artifact, and the short `publish` job — which runs only
+when that artifact exists — signs it and creates the GitHub release.
+
+Signing material goes to the `release` environment as `RELEASE_KEYSTORE_B64`
+(base64 of the PKCS12 keystore) and `RELEASE_LOCAL_PROPERTIES_B64` (base64 of a
+`local.properties` defining `storePassword`, `keyPassword` and `keyAlias`); the
+keystore itself is never committed. `vars.RELEASE_CERT_SHA256` is optional and
+makes the job refuse an APK whose signer certificate does not match it;
+`vars.KEYSTORE_TYPE` defaults to `PKCS12`. Until both secrets exist the job
+publishes the unsigned build instead, as the prerelease
+`titanium-<version>-unsigned`; with them the tag is `titanium-<version>` and the
+APK installs as-is. Required reviewers on that environment make every signature a
+manual approval.
+
+Runner labels, environments and the complete setup checklist are in
+[the automation guide](.github/automation/README.md#setup).
 
 Current releases can be attested using [GitHub CLI](https://github.com/cli/cli):
 
