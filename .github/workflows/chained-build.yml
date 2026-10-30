@@ -524,7 +524,13 @@ jobs:
   # prerelease, so the workflow behaves the same as before until you set them.
   publish:
     needs: build
-    if: inputs.action == 'sign' || needs.build.outputs.has_apk == 'true'
+    # `!cancelled()` is required, not decorative: in sign mode the build job is
+    # skipped, and a job whose dependency was skipped is skipped itself no
+    # matter what its own condition says, unless the condition opts out of that
+    # propagation with always()/!cancelled().
+    if: >-
+      !cancelled() &&
+      (inputs.action == 'sign' || needs.build.outputs.has_apk == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
