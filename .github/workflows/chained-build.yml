@@ -615,11 +615,22 @@ jobs:
           apksigner=$(find "$ANDROID_HOME"/build-tools -type f -name apksigner | sort -V | tail -1)
           aapt=$(find "$ANDROID_HOME"/build-tools -type f -name aapt2 | sort -V | tail -1)
           "$apksigner" verify --verbose --print-certs "$apk" | tee certs.txt
-          digest=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' certs.txt | tr -d ':' | tr 'A-F' 'a-f')
+          # apksigner labels the same digest two ways depending on the signature
+          # scheme it verified: "Signer #1 certificate SHA-256 digest:" for the
+          # jar/v1/v2 forms, "V3.0 Signer: certificate SHA-256 digest:" for v3.
+          # Anchoring on either one alone leaves the variable empty, and an empty
+          # digest reads as "signed by an unexpected key".
+          digests=$(grep -Eio 'certificate SHA-256 digest: [0-9a-fA-F]{64}' certs.txt \
+            | awk -F': ' '{print tolower($2)}' | sort -u)
+          if [ -z "$digests" ]; then
+            echo "::error::could not read a certificate digest from the apksigner output above"
+            exit 1
+          fi
+          printf '%s\n' "$digests" | sed 's/^/signer certificate: /'
           if [ -n "${EXPECTED_CERT_SHA256}" ]; then
             expected=$(printf '%s' "$EXPECTED_CERT_SHA256" | tr -d ':' | tr 'A-F' 'a-f')
-            if [ "$digest" != "$expected" ]; then
-              echo "::error::the APK is signed with $digest but RELEASE_CERT_SHA256 is $expected; refusing to publish a build signed by an unexpected key"
+            if ! printf '%s\n' "$digests" | grep -qx "$expected"; then
+              echo "::error::the APK is signed by none of the above but RELEASE_CERT_SHA256 is $expected; refusing to publish a build signed by an unexpected key"
               exit 1
             fi
             echo "certificate matches RELEASE_CERT_SHA256"
