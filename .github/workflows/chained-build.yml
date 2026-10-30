@@ -12,7 +12,8 @@ name: Chained build
 # the next job's ninja continue instead of starting over. The last step queues
 # the next session on its own, so one dispatch runs the whole chain until the
 # titanium-arm64-unsigned artifact appears. action=reset ignores the cache and
-# builds from scratch; auto_chain=false leaves queueing to you.
+# builds from scratch; action=sign skips the build job completely and signs the
+# unsigned APK the last chain published; auto_chain=false leaves queueing to you.
 #
 # Progress is checked between sessions: the pending-target count each session
 # reports is stored in the cache manifest, and a session that removes less than
@@ -30,13 +31,14 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "continue from the cached checkout, reset and build from scratch, or probe the cache without building"
+        description: "continue from the cached checkout, reset and build from scratch, probe the cache without building, or sign the already-published unsigned APK without building"
         required: true
         type: choice
         options:
           - continue
           - reset
           - probe
+          - sign
         default: continue
       build_minutes:
         description: "Minutes of compilation this job may attempt (keep at or below 300)"
@@ -76,11 +78,14 @@ permissions:
 concurrency:
   # Every mutating action shares one group so two sessions cannot write the
   # cache at once; the read-only probe is allowed to run alongside a build.
-  group: chained-build-${{ inputs.action == 'probe' && 'probe' || 'build' }}
+  group: chained-build-${{ inputs.action == 'probe' && 'probe' || inputs.action == 'sign' && 'sign' || 'build' }}
   cancel-in-progress: false
 
 jobs:
   build:
+    # action=sign publishes the APK a previous chain already produced, so this
+    # job - the only expensive one - is skipped entirely for it.
+    if: inputs.action != 'sign'
     outputs:
       # Read by the publish job below. A probe session has no tree and a session
       # that ran out of budget has no APK, so both report false and publishing
@@ -205,6 +210,14 @@ jobs:
           fi
           echo "generation=$generation" >> "$GITHUB_OUTPUT"
           echo "pending=${pending:-}" >> "$GITHUB_OUTPUT"
+          # Whether the tree arrived with a finished APK already in it. The save
+          # step uses this to tell "this session completed the build" (worth
+          # caching, or the next one replays it) from "nothing changed" (not).
+          if compgen -G "chromium/src/out/release/*.apk" >/dev/null; then
+            echo "had_apk=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "had_apk=false" >> "$GITHUB_OUTPUT"
+          fi
           df -h /
 
       # Read-only: answers where siso keeps its build state and whether the
@@ -372,8 +385,9 @@ jobs:
             done
           }
           cd "$GITHUB_WORKSPACE"
-          if compgen -G "chromium/src/out/release/*-unsigned.apk" >/dev/null; then
-            echo "::notice::the APK exists, so this chain is done; leaving the cache alone"
+          if compgen -G "chromium/src/out/release/*-unsigned.apk" >/dev/null \
+             && [ '${{ steps.restore.outputs.had_apk }}' = 'true' ]; then
+            echo "::notice::the APK was already in the restored tree and this session added nothing to cache; leaving it alone"
             exit 0
           fi
           if [ ! -f chromium/src/out/Default/.titanium-prepared ]; then
@@ -510,7 +524,7 @@ jobs:
   # prerelease, so the workflow behaves the same as before until you set them.
   publish:
     needs: build
-    if: needs.build.outputs.has_apk == 'true'
+    if: inputs.action == 'sign' || needs.build.outputs.has_apk == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
@@ -532,11 +546,27 @@ jobs:
           sparse-checkout-cone-mode: false
           submodules: false
 
-      - name: Download the APK this run produced
+      - name: Get the APK to sign
         run: |
           set -euo pipefail
-          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            -n titanium-arm64-unsigned -D in
+          mkdir -p in
+          if [ '${{ inputs.action }}' = 'sign' ]; then
+            # No build ran in this chain, so take the unsigned APK the last one
+            # published. The newest *-unsigned prerelease wins; build-cache is
+            # excluded because its tag does not end in -unsigned.
+            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+              --jq '[.[] | select(.prerelease and (.tag_name | endswith("-unsigned")))]
+                    | sort_by(.created_at) | reverse | .[0].tag_name // empty')
+            if [ -z "$tag" ]; then
+              echo "::error::action=sign takes the APK from an existing titanium-<version>-unsigned release and there is none yet"
+              exit 1
+            fi
+            echo "signing the APK from release $tag"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p '*-unsigned.apk' -D in
+          else
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              -n titanium-arm64-unsigned -D in
+          fi
           ls -l in
 
       - name: Sign the APK

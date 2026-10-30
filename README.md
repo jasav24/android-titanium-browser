@@ -115,6 +115,13 @@ manual approval.
 Runner labels, environments and the complete setup checklist are in
 [the automation guide](.github/automation/README.md#setup).
 
+If a chain finished and left only the unsigned APK behind, dispatch
+`action=sign`: it skips the build job entirely, takes the APK from the newest
+`titanium-<version>-unsigned` release, signs it and publishes `titanium-<version>`.
+The session that completes a build also saves its cache generation, so a later
+`action=continue` restores a tree that already contains the APK and goes straight
+to publishing instead of replaying the last few hours of compilation.
+
 Current releases can be attested using [GitHub CLI](https://github.com/cli/cli):
 
 ```shell
