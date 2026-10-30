@@ -14,6 +14,9 @@ name: Chained build
 # titanium-arm64-unsigned artifact appears. action=reset ignores the cache and
 # builds from scratch; action=sign skips the build job completely and signs the
 # unsigned APK the last chain published; auto_chain=false leaves queueing to you.
+# A session that restores a tree which already holds the APK compiles nothing at
+# all: it uploads that APK and goes straight to signing, so re-dispatching a
+# finished chain costs one restore instead of another five hours.
 #
 # Progress is checked between sessions: the pending-target count each session
 # reports is stored in the cache manifest, and a session that removes less than
@@ -210,8 +213,9 @@ jobs:
           fi
           echo "generation=$generation" >> "$GITHUB_OUTPUT"
           echo "pending=${pending:-}" >> "$GITHUB_OUTPUT"
-          # Whether the tree arrived with a finished APK already in it. The save
-          # step uses this to tell "this session completed the build" (worth
+          # Whether the tree arrived with a finished APK already in it. The build
+          # step uses this to skip compiling a job that is already done, and the
+          # save step uses it to tell "this session completed the build" (worth
           # caching, or the next one replays it) from "nothing changed" (not).
           if compgen -G "chromium/src/out/release/*.apk" >/dev/null; then
             echo "had_apk=true" >> "$GITHUB_OUTPUT"
@@ -296,7 +300,11 @@ jobs:
 
       - name: Build for this session
         id: build
-        if: inputs.action != 'probe'
+        # had_apk comes from the restore step: a chain that resumes a tree which
+        # already holds the finished APK has nothing left to compile, so it falls
+        # through to the upload and publish steps instead of spending five hours
+        # re-deriving objects siso already has.
+        if: inputs.action != 'probe' && steps.restore.outputs.had_apk != 'true'
         continue-on-error: true
         timeout-minutes: 320
         env:
@@ -455,6 +463,14 @@ jobs:
           set -euo pipefail
           status='${{ steps.build.outputs.status }}'
           if [ -z "$status" ]; then
+            if [ '${{ steps.restore.outputs.had_apk }}' = 'true' ]; then
+              echo "::notice::the restored tree already held the APK; this session compiled nothing and handed it to the publish job"
+              exit 0
+            fi
+            if [ '${{ inputs.action }}' = 'probe' ]; then
+              echo "probe session: the build step never runs"
+              exit 0
+            fi
             echo "::warning::the build step produced no status; read the log above"
             exit 0
           fi
