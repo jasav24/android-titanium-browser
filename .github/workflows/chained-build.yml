@@ -593,6 +593,10 @@ jobs:
           export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           . ./common.sh
           set_keys
+          # Sizes only. A truncated or wrong keystore secret otherwise surfaces as
+          # `DerInputStream.getLength(): lengthTag=NN, too big` from apksigner,
+          # which names neither the secret nor what arrived.
+          echo "decoded keystore bytes=$(wc -c < keys/test.jks), local.properties bytes=$(wc -c < keys/local.properties)"
           mkdir -p out
           # Drop the -unsigned marker: what comes out of sign_apk is signed.
           base=$(basename "${apks[0]}" .apk)
