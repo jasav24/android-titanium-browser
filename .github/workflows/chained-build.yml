@@ -684,7 +684,10 @@ jobs:
             exit 1
           fi
           asset=$(basename "$src")
-          sha256sum "$src" > "$src.sha256"
+          # Hash from the file's own directory so the path column is the bare
+          # asset name: the two files arrive side by side in whoever's Downloads
+          # folder, and `sha256sum -c` only works there if the name matches.
+          ( cd "$(dirname "$src")" && sha256sum "$asset" ) > "$src.sha256"
           if [ "$mode" = signed ]; then
             tag="titanium-${version}"
             title="Titanium ${version} arm64"
