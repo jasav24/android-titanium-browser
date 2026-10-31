@@ -182,6 +182,12 @@ jobs:
               restore=true
             else
               echo "::notice::$tag was prepared from recipe $cached_recipe, this checkout is $recipe; starting cold"
+              # The count belongs to the generation that was skipped. A cold
+              # build's pending total starts over at the full graph (54386
+              # here), so comparing it against the old generation's 29570 made
+              # the first session look like it had gone backwards and stopped
+              # the chain right after the most expensive job of the run.
+              pending=''
             fi
             if [ "$restore" = "true" ]; then
               echo "restoring $tag ($parts parts, built from $cached_commit)"
