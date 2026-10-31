@@ -2,7 +2,18 @@
 
 mkdir -p chrome/android/java/res_titanium_base
 cp $SCRIPT_DIR/res/drawable/themed_app_icon.xml chrome/android/java/res_titanium_base/drawable/themed_app_icon.xml
-for icon in $(find chrome/android/java/res_titanium_base -type f -name '*.png'); do convert $icon -fill navy -tint 36 $icon && $SCRIPT_DIR/res/icon.sh $icon; done
+# icon: app mark
+# Every PNG under res_titanium_base is overwritten, not tinted: that art is
+# stock Titanium and the fork carries its own mark in res/app_icon.png. The
+# file is a 1024px square already cropped to the centre of the mark and
+# carrying its own background, so covering each density is the whole
+# transformation. The adaptive foreground is left opaque — with both layers
+# showing the same artwork, the launcher mask can crop or zoom without ever
+# exposing a seam.
+for icon in $(find chrome/android/java/res_titanium_base -type f -name '*.png'); do
+  geometry=$(identify -format '%wx%h' "$icon")
+  convert "$SCRIPT_DIR/res/app_icon.png" -resize "${geometry}^" -gravity center -extent "$geometry" "$icon"
+done
 sed -i 's|<application |<application android:extractNativeLibs="false" |' chrome/android/java/AndroidManifest.xml
 sed -i 's|<data android:mimeType="message/rfc822"/>|<data android:mimeType="message/rfc822"/><data android:mimeType="application/pdf"/>|' chrome/android/java/AndroidManifest.xml
 sed -i '/com.google.ar.core.min_apk_version/d' third_party/arcore-android-sdk-client/AndroidManifest_basesplit.xml

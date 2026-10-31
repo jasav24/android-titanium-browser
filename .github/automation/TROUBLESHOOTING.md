@@ -323,7 +323,7 @@ not fail. Review `smoke.png` and `smoke-report.md` manually before publishing.
 - `RELEASE_CERT_SHA256` must be the SHA-256 of the release signing certificate,
   with or without colons; the workflow normalizes it.
 - The APK package id must match `chrome_public_manifest_package` in the root
-  `args.gn` (`io.github.jqssun.helium` in the current tree).
+  `args.gn` (`com.iamacat.browser` in the current tree).
 - The AAB and both APKs must be signed by the same release key.
 - A test-signed artifact can never satisfy release verification.
 

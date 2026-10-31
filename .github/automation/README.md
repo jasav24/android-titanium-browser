@@ -32,10 +32,11 @@ normal `app/src/main/res` tree:
 - `patch.sh` applies sed-based UI, feature and branding edits to the Chromium
   checkout. The script is divided into `# brand`, `# accessibility`, `# dev`,
   `# ext` and `# desktop` sections.
-- `res/` contains the launcher/themed icons and icon generation input.
+- `res/` contains the launcher mark (`app_icon.png`), the themed icon and the
+  icons `patch.sh` sizes out of that mark.
 - `fastlane/` contains Play Store listing text, screenshots and store copy.
 - `extensions/` contains bundled-extension packaging.
-- `args.gn` contains the package id (`io.github.jqssun.helium`) and feature
+- `args.gn` contains the package id (`com.iamacat.browser`) and feature
   configuration.
 - `build.sh` and `common.sh` implement checkout, patching, signing and
   packaging.

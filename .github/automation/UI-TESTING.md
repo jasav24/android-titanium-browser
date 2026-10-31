@@ -16,7 +16,7 @@ automation report alone.
 | `patch.sh` sections marked `protected` | Toolbar, extension menu, popup geometry, extension settings UI, NTP behavior, omnibox, app menu, DevTools viewport. |
 | `patch.sh` unlabeled preamble | Startup/branding/manifest edits before the first section header. These default to `review`. |
 | `patch.sh` trailing `crbug.com` comment blocks | Not section headers, so those fixes inherit the previous section (`desktop: menu`) and are `protected`. |
-| `res/**` | Launcher icon, themed icon and icon generation. |
+| `res/**` | Launcher mark (`app_icon.png`), themed icon and icon sourcing. |
 | `fastlane/**` | Store listing, screenshots and store-facing copy. |
 | `extensions/**` | Bundled-extension staging and packaging. |
 | `args.gn` | Package id, Chromium features, product identity. |
@@ -37,13 +37,15 @@ On the build host or an attached device:
 
 ```bash
 adb install -r artifacts/*-arm64-v8a.apk
-adb shell monkey -p io.github.jqssun.helium \
+adb shell monkey -p com.iamacat.browser \
   -c android.intent.category.LAUNCHER 1
-adb shell pidof io.github.jqssun.helium
+adb shell pidof com.iamacat.browser
 ```
 
-The current package id is `io.github.jqssun.helium`. Confirm it with
-`aapt dump badging` or `adb shell pm list packages | grep helium`; do not guess.
+The current package id is `com.iamacat.browser`. Confirm it with
+`aapt dump badging` or `adb shell pm list packages | grep iamacat`; do not guess.
+The id changed from `io.github.jqssun.helium`, so a build from before the change
+installs beside this one instead of upgrading it, and keeps its own data.
 
 Record before and after evidence at the same device state:
 
@@ -64,7 +66,7 @@ protected path changed. They catch build-level regressions that a path
 classifier cannot see.
 
 - [ ] App installs and launches; process stays alive for at least 30 seconds.
-- [ ] No crash entry for `io.github.jqssun.helium` in
+- [ ] No crash entry for `com.iamacat.browser` in
       `adb logcat -b crash`.
 - [ ] First-run/onboarding flow is unchanged or intentionally changed.
 - [ ] New tab page, toolbar, omnibox, tab switcher and app menu render correctly.
@@ -119,9 +121,10 @@ without a manifest entry fails validation.
 
 These paths are not `patch.sh` sections but are equally visible to users.
 
-- [ ] Launcher icon and themed/monochrome icon are Titanium's, not stock
-      Chromium's; check launcher, recents and the app info screen.
-- [ ] App name and package id are correct (`io.github.jqssun.helium`).
+- [ ] Launcher icon is the fork's own `res/app_icon.png` mark, not Titanium's
+      or stock Chromium's; check launcher, recents and the app info screen.
+- [ ] Themed/monochrome icon is the fork's vector, not stock Chromium's.
+- [ ] App name and package id are correct (`com.iamacat.browser`).
 - [ ] Splash/launch background and status/navigation bar colors are unchanged.
 - [ ] `fastlane/` text and screenshots match the shipped UI; no stale Chromium
       or previous-brand screenshots.

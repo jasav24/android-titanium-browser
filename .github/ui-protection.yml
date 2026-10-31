@@ -43,7 +43,7 @@ path_rules:
     class: "protected"
     protection: "protected"
     requires_build: true
-    reason: "Flash Browser app icon, themed icon and icon generation script."
+    reason: "Flash Browser app mark (res/app_icon.png), themed icon and icon sizing."
 
   - pattern: "fastlane/**"
     class: "protected"
@@ -61,7 +61,7 @@ path_rules:
     class: "protected"
     protection: "protected"
     requires_build: true
-    reason: "Product package id (io.github.jqssun.helium) and Chromium feature configuration."
+    reason: "Product package id (com.iamacat.browser) and Chromium feature configuration."
 
   # --- The sed-based UI/feature patch surface ----------------------------
   - pattern: "patch.sh"
