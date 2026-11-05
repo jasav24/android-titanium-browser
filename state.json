@@ -2,11 +2,13 @@
   "schema_version": 1,
   "upstream": "jqssun/android-titanium-browser",
   "created_at": "2026-10-24T03:49:45Z",
-  "updated_at": "2026-10-31T04:02:02Z",
-  "last_scanned_sha": "5e9070a98b48f6b6cb239bf90b8718b91795b7c5",
+  "updated_at": "2026-11-05T04:16:47Z",
+  "last_scanned_sha": "8516166ece02309125af6edc9fd80dde7470df05",
   "processed_shas": [
     "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
-    "5e9070a98b48f6b6cb239bf90b8718b91795b7c5"
+    "5e9070a98b48f6b6cb239bf90b8718b91795b7c5",
+    "2df57170b040f1f85a064013ee34e9434c810a8b",
+    "8516166ece02309125af6edc9fd80dde7470df05"
   ],
   "integrated_shas": [
     "5e9070a98b48f6b6cb239bf90b8718b91795b7c5"
@@ -18,12 +20,28 @@
       "reason": "Cherry-pick conflict in: vanadium",
       "risk": "high",
       "first_seen": "2026-10-31T04:02:02Z",
-      "protection": "candidate",
+      "report": null
+    },
+    {
+      "sha": "2df57170b040f1f85a064013ee34e9434c810a8b",
+      "subject": "update",
+      "reason": "touches patch.sh sections: ext: ntp, unlabeled",
+      "risk": "high",
+      "first_seen": "2026-11-05T04:16:47Z",
+      "protection": "protected",
       "requires_build": true
     }
   ],
   "deferred": [],
-  "candidate": null,
+  "candidate": {
+    "target_sha": "8516166ece02309125af6edc9fd80dde7470df05",
+    "shas": [
+      "8516166ece02309125af6edc9fd80dde7470df05"
+    ],
+    "risk": "high",
+    "requires_full_build": true,
+    "created_at": "2026-11-05T04:16:47Z"
+  },
   "history": [
     {
       "at": "2026-10-24T03:49:45Z",
@@ -65,6 +83,19 @@
       "included": [],
       "pending": [
         "c21bc5ac921fd9da96c108b40afff202f6e8b0ba"
+      ],
+      "risk": "high"
+    },
+    {
+      "at": "2026-11-05T04:16:47Z",
+      "run_id": "41966802768",
+      "target_sha": "8516166ece02309125af6edc9fd80dde7470df05",
+      "result": "changes",
+      "included": [
+        "8516166ece02309125af6edc9fd80dde7470df05"
+      ],
+      "pending": [
+        "2df57170b040f1f85a064013ee34e9434c810a8b"
       ],
       "risk": "high"
     }
