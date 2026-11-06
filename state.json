@@ -2,7 +2,7 @@
   "schema_version": 1,
   "upstream": "jqssun/android-titanium-browser",
   "created_at": "2026-10-24T03:49:45Z",
-  "updated_at": "2026-11-05T04:16:47Z",
+  "updated_at": "2026-11-06T04:15:15Z",
   "last_scanned_sha": "8516166ece02309125af6edc9fd80dde7470df05",
   "processed_shas": [
     "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
@@ -28,8 +28,7 @@
       "reason": "touches patch.sh sections: ext: ntp, unlabeled",
       "risk": "high",
       "first_seen": "2026-11-05T04:16:47Z",
-      "protection": "protected",
-      "requires_build": true
+      "report": null
     }
   ],
   "deferred": [],
@@ -40,7 +39,7 @@
     ],
     "risk": "high",
     "requires_full_build": true,
-    "created_at": "2026-11-05T04:16:47Z"
+    "created_at": "2026-11-06T04:15:15Z"
   },
   "history": [
     {
@@ -97,6 +96,17 @@
       "pending": [
         "2df57170b040f1f85a064013ee34e9434c810a8b"
       ],
+      "risk": "high"
+    },
+    {
+      "at": "2026-11-06T04:15:15Z",
+      "run_id": "42161386645",
+      "target_sha": "8516166ece02309125af6edc9fd80dde7470df05",
+      "result": "changes",
+      "included": [
+        "8516166ece02309125af6edc9fd80dde7470df05"
+      ],
+      "pending": [],
       "risk": "high"
     }
   ]
