@@ -1,6 +1,6 @@
 import("//build/config/android/rules.gni")
 
-java_import("media3_exoplayer_hls_java") {
+java_prebuilt("media3_exoplayer_hls_java") {
   jar_path = "media3-exoplayer-hls.jar"
   deps = [
     "//third_party/androidx:androidx_annotation_annotation_java",
