@@ -304,6 +304,32 @@ jobs:
           echo
           df -h /
 
+      - name: Refresh copied player files
+        # patch.sh is skipped on a resumed tree, so files it only copies would
+        # stay frozen at whatever the last cold prep put there. player_native/
+        # is not part of the cache recipe, so refresh those copies here. The
+        # cmp guard keeps mtimes untouched when nothing changed: an unconditional
+        # cp would re-dirty build.ninja inputs and re-run gn gen every session.
+        if: inputs.action != 'probe'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          dest=chromium/src/titanium/player
+          if [ ! -d "$dest" ]; then
+            echo "tree is not prepared yet; patch.sh will copy the player files"
+            exit 0
+          fi
+          jdest=chromium/src/titanium/chromium_src/chrome/android/java/src/app/titanium/player
+          for f in player_native/java/src/app/titanium/player/*.java; do
+            if ! cmp -s "$f" "$jdest/$(basename "$f")"; then
+              cp "$f" "$jdest/"
+              echo "::notice::refreshed $(basename "$f") in the cached tree"
+            fi
+          done
+          if ! cmp -s player_native/BUILD.gn "$dest/BUILD.gn"; then
+            cp player_native/BUILD.gn "$dest/BUILD.gn"
+            echo "::notice::refreshed titanium/player/BUILD.gn in the cached tree"
+          fi
+
       - name: Build for this session
         id: build
         # had_apk comes from the restore step: a chain that resumes a tree which
