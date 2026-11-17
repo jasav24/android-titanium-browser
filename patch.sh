@@ -63,9 +63,11 @@ sed -i 's|^chrome_java_ext_full_path_deps = \[$|&\n  "//titanium/player:media3_e
 grep -qF '"//titanium/player:media3_exoplayer_hls_java",' titanium/chromium_src/chrome/android/chrome_java_ext_deps.gni || { echo "player: chrome_java_ext_deps.gni changed shape; ExoPlayer would not be on the classpath" >&2; exit 1; }
 # The vendored exoplayer target is visibility-restricted to its own package
 # ("depend on :exoplayer_java instead" — an alias only Google's internal build
-# defines). A group in the same package is the public face for this fork.
-printf '\ngroup("flash_exoplayer_java") {\n  public_deps = [ ":androidx_media3_media3_exoplayer_java" ]\n}\n' >> third_party/androidx/BUILD.gn
-grep -qF 'group("flash_exoplayer_java")' third_party/androidx/BUILD.gn || { echo "player: could not add the exoplayer group" >&2; exit 1; }
+# defines). A java_group in the same package is the public face for this fork;
+# a plain group() would not generate the __header/__host/__assetres subtargets
+# that chrome_java's dependency resolution needs.
+printf '\nandroidx_java_group("flash_exoplayer_java") {\n  public_deps = [ ":androidx_media3_media3_exoplayer_java" ]\n}\n' >> third_party/androidx/BUILD.gn
+grep -qF 'androidx_java_group("flash_exoplayer_java")' third_party/androidx/BUILD.gn || { echo "player: could not add the exoplayer group" >&2; exit 1; }
 # GN visibility propagates along public_deps, so the two restricted media3
 # targets (exoplayer, container) would refuse chrome_java even through the
 # group. Widen exactly those two blocks to the targets that need them.
