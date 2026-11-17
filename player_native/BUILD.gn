@@ -1,0 +1,14 @@
+import("//build/config/android/rules.gni")
+
+java_import("media3_exoplayer_hls_java") {
+  jar_path = "media3-exoplayer-hls.jar"
+  deps = [
+    "//third_party/androidx:androidx_annotation_annotation_java",
+    "//third_party/androidx:androidx_media3_media3_common_java",
+    "//third_party/androidx:androidx_media3_media3_container_java",
+    "//third_party/androidx:androidx_media3_media3_datasource_java",
+    "//third_party/androidx:androidx_media3_media3_decoder_java",
+    "//third_party/androidx:androidx_media3_media3_extractor_java",
+    "//third_party/androidx:flash_exoplayer_java",
+  ]
+}

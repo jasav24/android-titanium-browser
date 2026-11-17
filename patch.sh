@@ -43,70 +43,80 @@ sed -i 's/\bTitanium\b/Flash Browser/g' chrome/android/java/res_titanium_base/va
 sed -i 's#return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#if (UrlUtilities.isHttpOrHttps(url)) return false;\n        return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);#' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java
 grep -qF 'if (UrlUtilities.isHttpOrHttps(url)) return false;' chrome/android/java/src/org/chromium/chrome/browser/externalnav/ExternalNavigationDelegateImpl.java || { echo "links: patch did not apply; ExternalNavigationDelegateImpl changed upstream" >&2; exit 1; }
 
-# player: ship the in-page video overlay as a bundled extension
-# player/flashplayer.js reaches pages as a content script declared with
-# "world": "MAIN" and "all_frames": true, which is how it keeps the behaviour that
-# was measured by hand in the console: it runs in the page's own world, in every
-# frame, and a page CSP that refuses a remote script cannot refuse this one. The
-# crx in player/dist is packed by player/repack.sh (the signing key lives outside
-# this repository, beside the release keystore), and its manifest version is
-# stamped from the packing time, so a repack is always a version increase and the
-# browser reinstalls instead of keeping the previous copy.
-# Registered through the same bundle.py the Titanium Extension is fetched with, so
-# the id, bundled.json and the asset list stay derived from the crx rather than
-# hardcoded here. A file:// URL points it at the committed artifact.
-python3 $SCRIPT_DIR/extensions/bundle.py $SCRIPT_DIR/extensions/dist flash-player "file://$SCRIPT_DIR/player/dist/flash-player.crx"
-grep -qF '"external_crx": "flash-player.crx",' $SCRIPT_DIR/extensions/dist/bundled.json || { echo "player: the overlay is not in bundled.json, so nothing installs it" >&2; exit 1; }
-grep -qF '"extensions/flash-player.crx",' $SCRIPT_DIR/extensions/dist/BUILD.gn || { echo "player: flash-player.crx is not staged as an APK asset" >&2; exit 1; }
-# A packed artifact goes stale the moment someone edits the script and forgets to
-# repack, so compare the bytes inside the crx against the source instead of
-# trusting the file that happens to be committed.
-python3 - "$SCRIPT_DIR/player/dist/flash-player.crx" "$SCRIPT_DIR/player/flashplayer.js" "$SCRIPT_DIR/player/extension/manifest.json" <<'PY' || { echo "player: dist/flash-player.crx is stale against player/; run player/repack.sh" >&2; exit 1; }
-import base64, hashlib, json, struct, sys, zipfile
+# player: native ExoPlayer video player (UC-browser style)
+# The old in-page overlay extension (player/flash-player.crx) is gone. Videos now
+# play in a native fullscreen activity built on androidx.media3 ExoPlayer, which
+# Chromium already vendors at 1.2.0 (third_party/androidx). Two entry points:
+# a long-press context-menu row on a video, and an app-menu "Video player" row
+# that scans the page for a playable stream. HLS needs one module Chromium does
+# not vendor (media3-exoplayer-hls); its classes.jar is fetched from Google Maven
+# at patch time and imported as a plain java target — it has no resources or
+# native code, so no AAR machinery is required.
+python3 $SCRIPT_DIR/player_native/fetch_hls.py titanium/player/media3-exoplayer-hls.jar
+mkdir -p titanium/player
+cp $SCRIPT_DIR/player_native/BUILD.gn titanium/player/BUILD.gn
+mkdir -p titanium/chromium_src/chrome/android/java/src/app/titanium/player
+cp $SCRIPT_DIR/player_native/java/src/app/titanium/player/*.java titanium/chromium_src/chrome/android/java/src/app/titanium/player/
+sed -i 's|^chrome_java_ext_rel_path_sources = \[$|&\n  "java/src/app/titanium/player/FlashVideoPlayer.java",\n  "java/src/app/titanium/player/FlashPlayerActivity.java",|' titanium/chromium_src/chrome/android/chrome_java_ext_sources.gni
+grep -qF '"java/src/app/titanium/player/FlashPlayerActivity.java",' titanium/chromium_src/chrome/android/chrome_java_ext_sources.gni || { echo "player: chrome_java_ext_sources.gni changed shape; the player would not be compiled" >&2; exit 1; }
+sed -i 's|^chrome_java_ext_full_path_deps = \[$|&\n  "//titanium/player:media3_exoplayer_hls_java",\n  "//third_party/androidx:flash_exoplayer_java",|' titanium/chromium_src/chrome/android/chrome_java_ext_deps.gni
+grep -qF '"//titanium/player:media3_exoplayer_hls_java",' titanium/chromium_src/chrome/android/chrome_java_ext_deps.gni || { echo "player: chrome_java_ext_deps.gni changed shape; ExoPlayer would not be on the classpath" >&2; exit 1; }
+# The vendored exoplayer target is visibility-restricted to its own package
+# ("depend on :exoplayer_java instead" — an alias only Google's internal build
+# defines). A group in the same package is the public face for this fork.
+printf '\ngroup("flash_exoplayer_java") {\n  public_deps = [ ":androidx_media3_media3_exoplayer_java" ]\n}\n' >> third_party/androidx/BUILD.gn
+grep -qF 'group("flash_exoplayer_java")' third_party/androidx/BUILD.gn || { echo "player: could not add the exoplayer group" >&2; exit 1; }
+# GN visibility propagates along public_deps, so the two restricted media3
+# targets (exoplayer, container) would refuse chrome_java even through the
+# group. Widen exactly those two blocks to the targets that need them.
+python3 - <<'PY' || { echo "player: third_party/androidx/BUILD.gn changed shape; media3 visibility not widened" >&2; exit 1; }
+import re
 
-crx, script, template = sys.argv[1], sys.argv[2], sys.argv[3]
-archive = zipfile.ZipFile(crx)
-assert sorted(archive.namelist()) == ["flashplayer.js", "manifest.json"], archive.namelist()
-assert archive.read("flashplayer.js") == open(script, "rb").read()
+path = "third_party/androidx/BUILD.gn"
+src = open(path).read()
+wanted = {
+    "androidx_media3_media3_exoplayer_java",
+    "androidx_media3_media3_container_java",
+}
+seen = set()
+widened = 'visibility = [ ":*", "//chrome/android:*", "//titanium/player:*" ]'
 
-manifest = json.loads(archive.read("manifest.json"))
-source = json.load(open(template))
-source.pop("version")
-packed = dict(manifest)
-packed.pop("version")
-assert packed == source, "manifest drifted from player/extension/manifest.json"
+def rewrite(m):
+    name, body = m.group(1), m.group(0)
+    if name not in wanted:
+        return body
+    seen.add(name)
+    body = re.sub(r"visibility = \[[^\]]*\]", widened, body, count=1)
+    return body
 
-# The manifest key pins the extension id, so it has to be the key the crx was
-# actually signed with, or the build records one id and Chromium installs another.
-data = open(crx, "rb").read()
-assert data[:4] == b"Cr24", "not a CRX file"
-header = data[12:12 + struct.unpack("<I", data[8:12])[0]]
-
-
-def varint(buf, i):
-    value = shift = 0
-    while True:
-        byte = buf[i]
-        i += 1
-        value |= (byte & 0x7F) << shift
-        shift += 7
-        if not byte & 0x80:
-            return value, i
-
-
-i = 0
-while i < len(header):
-    key, i = varint(header, i)
-    length, i = varint(header, i)
-    if key >> 3 == 10000:
-        break
-    i += length
-signed = header[i + 2:i + 18]
-assert len(signed) == 16, "no signing key in the crx header"
-assert hashlib.sha256(base64.b64decode(manifest["key"])).digest()[:16] == signed, \
-    "manifest key and signing key disagree"
-print("player: bundled script, manifest and signing key all match the source")
+src = re.sub(
+    r'androidx_android_aar_prebuilt\("(androidx_media3_[a-z0-9_]+)"\) \{.*?\n  \}',
+    rewrite, src, flags=re.S)
+assert seen == wanted, "media3 targets missing: %s" % (wanted - seen)
+open(path, "w").write(src)
 PY
+# evaluateJavaScript from the browser is CHECK-gated to WebUI pages
+# (RenderFrameHostImpl::CanExecuteJavaScript). The player scans pages for video
+# URLs from Java, so open the gate the same way WebView's
+# AllowInjectingJavaScript does. Only our own code calls evaluateJavaScript.
+sed -i 's|bool RenderFrameHostImpl::CanExecuteJavaScript() {|& if (true) return true;|' content/browser/renderer_host/render_frame_host_impl.cc
+grep -qF 'bool RenderFrameHostImpl::CanExecuteJavaScript() { if (true) return true;' content/browser/renderer_host/render_frame_host_impl.cc || { echo "player: CanExecuteJavaScript changed upstream; the page scan would crash" >&2; exit 1; }
+sed -i 's|<item type="id" name="manage_all_windows_menu_id" />|&<item type="id" name="flash_video_player_menu_id" />|' chrome/android/java/res/values/ids.xml
+grep -qF 'flash_video_player_menu_id' chrome/android/java/res/values/ids.xml || { echo "player: ids.xml changed shape; the menu rows would have no id" >&2; exit 1; }
+sed -i 's|android:name="org.chromium.chrome.browser.devtools.DevToolsActivity"|android:name="app.titanium.player.FlashPlayerActivity"\n            android:theme="@style/Theme.Chromium.Activity"\n            android:exported="false"\n            android:hardwareAccelerated="true"\n            android:configChanges="orientation\|keyboardHidden\|keyboard\|screenSize\|mcc\|mnc\|screenLayout\|smallestScreenSize\|uiMode\|navigation\|density\|touchscreen\|colorMode\|fontScale" />\n        <activity\n            &|' chrome/android/java/AndroidManifest.xml
+grep -qF 'android:name="app.titanium.player.FlashPlayerActivity"' chrome/android/java/AndroidManifest.xml || { echo "player: AndroidManifest.xml changed shape; the player activity is not registered" >&2; exit 1; }
+# context menu: a row on every video with a downloadable src
+sed -i 's|if (mParams.isVideo() \&\& areMandatoryFlowsCompleted(getProfile())) {|&\n            if (UrlUtilities.isDownloadableScheme(mParams.getSrcUrl())) videoGroup.add(new ListItem(ListItemType.MENU_ITEM, buildListItemModel("Play in video player", R.id.flash_video_player_menu_id, true)));|' chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java
+grep -qF 'buildListItemModel("Play in video player", R.id.flash_video_player_menu_id, true)' chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java || { echo "player: ChromeContextMenuPopulator video group changed upstream" >&2; exit 1; }
+sed -i 's|public boolean onItemSelected(int itemId) {|&\n        if (itemId == R.id.flash_video_player_menu_id) { app.titanium.player.FlashVideoPlayer.openFromWebContents(mContext, mItemDelegate.getWebContents(), mParams.getSrcUrl().getSpec()); return true; }|' chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java
+grep -qF 'FlashVideoPlayer.openFromWebContents(mContext, mItemDelegate.getWebContents(),' chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java || { echo "player: ChromeContextMenuPopulator.onItemSelected changed upstream" >&2; exit 1; }
+# app menu: a "Video player" row that scans the current page. Anchored to the
+# standalone call at 12-space indent; the same call also appears inside an
+# `if (MultiWindowUtils...)` line that must not carry the row.
+sed -i 's|^            modelList.add(buildManageWindowsItem());$|&\n        modelList.add(new ListItem(AppMenuHandler.AppMenuItemType.STANDARD_NO_ICON, AppMenuItemUtils.buildBaseModelForTextItem(getAppMenuItemTheme(), R.id.flash_video_player_menu_id, false).with(AppMenuItemProperties.TITLE, "Video player").build()));|' chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+grep -qF 'R.id.flash_video_player_menu_id, false).with(' chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java || { echo "player: TabbedAppMenuPropertiesDelegate changed upstream; the menu row is missing" >&2; exit 1; }
+sed -i 's|boolean currentTabIsNtp = isTabNtp(currentTab);|&\n        if (id == R.id.flash_video_player_menu_id) { app.titanium.player.FlashVideoPlayer.openFromTab(this, currentTab); return true; }|' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+grep -qF 'FlashVideoPlayer.openFromTab(this, currentTab);' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java || { echo "player: ChromeTabbedActivity.onMenuOrKeyboardAction changed upstream" >&2; exit 1; }
 
 cp -r $SCRIPT_DIR/extensions/dist titanium/
 cp $SCRIPT_DIR/extensions/stage_bundled_extensions.inc titanium/dist/

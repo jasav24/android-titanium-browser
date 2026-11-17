@@ -139,18 +139,71 @@ Limits worth knowing before testing:
 - If the process dies during a download, the file and its notification are
   owned by the system Downloads UI, which can be resumed and opened from there.
 
-### In-page video player
+### Native video player
 
-[`player/`](player/README.md) is shipped as a bundled extension rather than injected
-from Java. The `# player:` block in [`patch.sh`](patch.sh) registers
-`player/dist/flash-player.crx` through the same `extensions/bundle.py` the Titanium
-Extension is fetched with, so the id and version come from the packed artifact itself,
-and it installs on first run as an external-pref extension next to it. Its manifest is
-Manifest V3 with one content script over `http`/`https`, `world: "MAIN"` and
-`all_frames: true`, which is what lets the same script that was measured as a console
-snippet also run inside iframe players and survive a page's `script-src`.
-`player/repack.sh` re-packs it, and the build refuses a crx whose contents have drifted
-from `player/flashplayer.js` or `player/extension/manifest.json`.
+The old in-page overlay extension (`player/flash-player.crx`) has been removed.
+Videos now play in a native fullscreen activity built on **androidx.media3
+ExoPlayer**, UC-browser style. The code lives in [`player_native/`](player_native/)
+and the `# player:` block in [`patch.sh`](patch.sh) wires it in:
+
+- `FlashPlayerActivity` is a plain fullscreen activity — ExoPlayer on a
+  `SurfaceView`, all controls drawn in Java (no new resources). Gestures follow
+  UC Browser: vertical drag on the left quarter is brightness, on the right
+  quarter volume, horizontal drag seeks (90 s span) with a centre HUD,
+  double-tap skips ±10 s with a side ripple, long-press runs 2x until lift.
+  Bottom bar: elapsed/seek/total plus -10 s, play/pause, +10 s, speed and a
+  settings sheet (0.25–2x chips, Loop video, Rotate screen). Top bar: back,
+  title, screen lock. Orientation follows the video's shape unless Rotate
+  overrides it.
+- `FlashVideoPlayer` is the handoff: it scans the page (main frame and
+  same-origin iframes) for `<video>` elements with an `http(s)` URL, picks the
+  playing/largest one, pauses it in the page and launches the activity at the
+  page video's current position. The page URL is sent as `Referer` so
+  hotlink-gated CDNs keep working.
+
+Two entry points, both one-line hooks:
+
+- **Long-press a video → Play in video player** — a row in the video group of
+  `ChromeContextMenuPopulator`, handled in its `onItemSelected`.
+- **Menu ⋮ → Video player** — a row after "Manage windows" in
+  `TabbedAppMenuPropertiesDelegate`, handled in
+  `ChromeTabbedActivity.onMenuOrKeyboardAction`; it scans the current page and
+  shows a toast when nothing playable is found.
+
+Build wiring:
+
+- Chromium already vendors androidx.media3 **1.2.0** in `//third_party/androidx`
+  (fetched by `gclient sync`). The vendored `exoplayer` and `container` targets
+  are visibility-restricted to their own package, so the block widens exactly
+  those two and adds a `flash_exoplayer_java` group as the public face.
+- HLS is the one module Chromium does not vendor.
+  `player_native/fetch_hls.py` downloads `media3-exoplayer-hls-1.2.0.aar` from
+  Google Maven **at patch time**, verifies its published sha1 and extracts
+  `classes.jar` (the AAR has no resources or native code), imported as
+  `//titanium/player:media3_exoplayer_hls_java`. `DefaultMediaSourceFactory`
+  then picks HLS automatically for `.m3u8` streams.
+- The page scan runs through `WebContents.evaluateJavaScript`, which content
+  CHECK-gates to WebUI pages (`RenderFrameHostImpl::CanExecuteJavaScript`).
+  The block opens that gate the way WebView's `AllowInjectingJavaScript` does;
+  only the player calls `evaluateJavaScript`.
+- Both Java files are compiled through `chrome_java_ext_sources.gni`, the deps
+  through `chrome_java_ext_deps.gni`, and the activity is registered in
+  `chrome/android/java/AndroidManifest.xml` next to `DevToolsActivity`.
+
+Known limits (v1):
+
+- `blob:`/MSE streams (YouTube and most JS players) have no URL to hand to a
+  native player; the scan skips them and the menu shows a toast. DRM (Widevine)
+  streams are not handled either.
+- Videos in cross-origin iframes are invisible to the main-world scan; the
+  context-menu row still works when the long-press lands on the video itself.
+- Playback position is handed **to** the player but not back to the page; the
+  page video stays paused where it was.
+- No automatic floating chip yet — playback starts from the two menu entries.
+- Verified so far: both Java files compile against the real media3 1.2.0 jars
+  and android.jar; every `patch.sh` hook was dry-run against the exact
+  157.0.8103.78 sources and the Vanadium patch series. On-device behaviour
+  needs an APK from the chained build.
 
 ## Building
 
