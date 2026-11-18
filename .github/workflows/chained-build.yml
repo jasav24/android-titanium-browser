@@ -188,6 +188,11 @@ jobs:
               # the first session look like it had gone backwards and stopped
               # the chain right after the most expensive job of the run.
               pending=''
+              # max_sessions is documented as "sessions since the last cold
+              # build", so the counter restarts here too; carrying it over let
+              # a handful of short gn-error sessions exhaust the cap of an
+              # otherwise healthy chain.
+              generation=0
             fi
             if [ "$restore" = "true" ]; then
               echo "restoring $tag ($parts parts, built from $cached_commit)"
@@ -337,7 +342,9 @@ jobs:
         # through to the upload and publish steps instead of spending five hours
         # re-deriving objects siso already has.
         if: inputs.action != 'probe' && steps.restore.outputs.had_apk != 'true'
-        continue-on-error: true
+        # No continue-on-error: every later step already runs under if: always(),
+        # and masking the exit code painted failed builds green in the UI and
+        # the jobs API while the real verdict waited behind the cache save.
         timeout-minutes: 320
         env:
           BUILD_ABIS: arm64
@@ -394,9 +401,26 @@ jobs:
             summary=$(grep -oE '[0-9]+ done, [0-9]+ failed, [0-9]+ remaining' build.log | tail -1 || true)
             echo "::notice::${summary:-no siso summary in the log}"
             echo "remaining=$(printf '%s' "$summary" | awk '{print $5}')" >> "$GITHUB_OUTPUT"
+            # The culprit lines, while the job log is still streaming to the UI.
+            grep -m 5 -E '^FAILED:|^ERROR' build.log || true
             tail -n 20 build.log
           fi
           df -h /
+
+      # A running job's log is sealed until the job completes, and the cache
+      # save keeps it open for 20-40 more minutes after a build error. Artifacts
+      # are downloadable the moment this step finishes, so the failure can be
+      # diagnosed while the cache is still uploading.
+      - name: Upload the build log
+        if: always() && inputs.action != 'probe'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-log
+          path: |
+            build.log
+            chromium/src/out/Default/siso_explain*
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload the APK
         if: always()
