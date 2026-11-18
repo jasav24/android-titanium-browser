@@ -99,10 +99,13 @@ open(path, "w").write(src)
 PY
 # evaluateJavaScript from the browser is CHECK-gated to WebUI pages
 # (RenderFrameHostImpl::CanExecuteJavaScript). The player scans pages for video
-# URLs from Java, so open the gate the same way WebView's
-# AllowInjectingJavaScript does. Only our own code calls evaluateJavaScript.
-sed -i 's|bool RenderFrameHostImpl::CanExecuteJavaScript() {|& if (true) return true;|' content/browser/renderer_host/render_frame_host_impl.cc
-grep -qF 'bool RenderFrameHostImpl::CanExecuteJavaScript() { if (true) return true;' content/browser/renderer_host/render_frame_host_impl.cc || { echo "player: CanExecuteJavaScript changed upstream; the page scan would crash" >&2; exit 1; }
+# URLs from Java, so open the gate through the same global WebView's
+# AllowInjectingJavaScript() sets. Flipping its default leaves the function
+# body untouched: an early `if (true) return true;` there is dead code that
+# -Wunreachable-code-aggressive -Werror rejects. Only our own code calls
+# evaluateJavaScript.
+sed -i 's|^bool g_allow_injecting_javascript = false;$|bool g_allow_injecting_javascript = true;|' content/browser/renderer_host/render_frame_host_impl.cc
+grep -qF 'bool g_allow_injecting_javascript = true;' content/browser/renderer_host/render_frame_host_impl.cc || { echo "player: g_allow_injecting_javascript changed upstream; the page scan would crash" >&2; exit 1; }
 sed -i 's|<item type="id" name="manage_all_windows_menu_id" />|&<item type="id" name="flash_video_player_menu_id" />|' chrome/android/java/res/values/ids.xml
 grep -qF 'flash_video_player_menu_id' chrome/android/java/res/values/ids.xml || { echo "player: ids.xml changed shape; the menu rows would have no id" >&2; exit 1; }
 sed -i 's|android:name="org.chromium.chrome.browser.devtools.DevToolsActivity"|android:name="app.titanium.player.FlashPlayerActivity"\n            android:theme="@style/Theme.Chromium.Activity"\n            android:exported="false"\n            android:hardwareAccelerated="true"\n            android:configChanges="orientation\|keyboardHidden\|keyboard\|screenSize\|mcc\|mnc\|screenLayout\|smallestScreenSize\|uiMode\|navigation\|density\|touchscreen\|colorMode\|fontScale" />\n        <activity\n            &|' chrome/android/java/AndroidManifest.xml
