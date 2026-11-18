@@ -342,9 +342,10 @@ jobs:
         # through to the upload and publish steps instead of spending five hours
         # re-deriving objects siso already has.
         if: inputs.action != 'probe' && steps.restore.outputs.had_apk != 'true'
-        # No continue-on-error: every later step already runs under if: always(),
-        # and masking the exit code painted failed builds green in the UI and
-        # the jobs API while the real verdict waited behind the cache save.
+        # continue-on-error keeps a normal budget cut-off (exit 137) from
+        # painting the whole job red; the "Check the build verdict" step below
+        # surfaces a real error in the UI within seconds instead.
+        continue-on-error: true
         timeout-minutes: 320
         env:
           BUILD_ABIS: arm64
@@ -421,6 +422,22 @@ jobs:
             chromium/src/out/Default/siso_explain*
           if-no-files-found: ignore
           retention-days: 7
+
+      # The build step's own conclusion is masked (a budget cut-off is normal),
+      # so this step is the live verdict: red within seconds of a real error,
+      # green on completion or cut-off, without waiting for the cache save.
+      - name: Check the build verdict
+        if: always() && inputs.action != 'probe' && steps.restore.outputs.had_apk != 'true'
+        run: |
+          set -euo pipefail
+          status='${{ steps.build.outputs.status }}'
+          budget='${{ steps.build.outputs.budget }}'
+          if [ "$status" = "0" ] || [ "$budget" = "true" ]; then
+            echo "build verdict: status=$status budget=$budget (completed or cut off on budget)"
+            exit 0
+          fi
+          echo "::error::the build failed on its own error (status ${status:-unknown}); the build-log artifact has the details"
+          exit 1
 
       - name: Upload the APK
         if: always()
