@@ -22,7 +22,6 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -58,17 +57,22 @@ public class FlashPlayerActivity extends Activity {
     private FrameLayout mRoot;
     private View mTopBar;
     private View mBottomBar;
-    private TextView mTitleView;
-    private TextView mElapsedView;
-    private TextView mTotalView;
+    private View mCenterControls;
     private TextView mHudView;
     private TextView mSpeedButton;
-    private SeekBar mSeekBar;
+    private TextView mTimeView;
+    private SeekLine mSeekBar;
     private ProgressBar mBuffering;
     private IconView mPlayPauseIcon;
     private IconView mLockIcon;
+    private TextView mSubtitleView;
     private View mSheet;
     private View mScrim;
+    private LinearLayout mSubSheet;
+    private TextView mSpeedValue;
+    private TextView mQualityValue;
+    private int mQualityHeight = -1; // -1 = Auto
+    private String[] mQualityOptions = {"Auto"};
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private GestureDetector mGestureDetector;
@@ -76,10 +80,14 @@ public class FlashPlayerActivity extends Activity {
 
     private String mUrl;
     private String mTitle;
+    private String mHost;
     private long mStartPositionMs;
     private float mSpeed = 1f;
     private boolean mLoop;
     private boolean mLocked;
+    private boolean mFitWide;
+    private int mAspectMode; // 0 fit, 1 cover, 2 stretch
+    private boolean mBackgroundPlay;
     private boolean mControlsVisible = true;
     private boolean mSeekBarTracking;
     private boolean mWasPlayingOnPause;
@@ -116,6 +124,13 @@ public class FlashPlayerActivity extends Activity {
         mTitle = getIntent().getStringExtra(EXTRA_TITLE);
         mStartPositionMs = getIntent().getLongExtra(EXTRA_POSITION_MS, 0);
         String pageUrl = getIntent().getStringExtra(EXTRA_PAGE_URL);
+        try {
+            mHost = pageUrl == null || pageUrl.isEmpty()
+                    ? ""
+                    : android.net.Uri.parse(pageUrl).getHost();
+        } catch (Exception e) {
+            mHost = "";
+        }
         if (mUrl == null || mUrl.isEmpty()) {
             finish();
             return;
@@ -213,7 +228,9 @@ public class FlashPlayerActivity extends Activity {
         mRoot.addView(mBuffering, new FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER));
 
         buildTopBar();
+        buildCenterControls();
         buildBottomBar();
+        buildSubtitleAndLock();
         buildSheet();
         setContentView(mRoot);
         mRoot.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> layoutSurface());
@@ -231,27 +248,71 @@ public class FlashPlayerActivity extends Activity {
         bar.setBackground(
                 new GradientDrawable(
                         GradientDrawable.Orientation.TOP_BOTTOM,
-                        new int[] {0xCC000000, 0x00000000}));
-        bar.setPadding(dp(6), dp(2), dp(6), dp(10));
+                        new int[] {0xB3000000, 0x00000000}));
+        bar.setPadding(dp(6), dp(4), dp(6), dp(18));
 
-        IconView back = new IconView(this, "back");
+        IconView back = new IconView(this, "chevron");
         back.setOnClickListener(v -> finish());
-        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        bar.addView(back, new LinearLayout.LayoutParams(dp(36), dp(36)));
 
-        mTitleView = new TextView(this);
-        mTitleView.setText(mTitle == null || mTitle.isEmpty() ? "Video" : mTitle);
-        mTitleView.setTextColor(Color.WHITE);
-        mTitleView.setTextSize(14);
-        mTitleView.setSingleLine(true);
-        mTitleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams titleParams =
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        titleParams.setMargins(dp(6), 0, dp(6), 0);
-        bar.addView(mTitleView, titleParams);
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        titles.setGravity(Gravity.CENTER_VERTICAL);
+        titles.setPadding(dp(6), 0, dp(6), 0);
+        TextView title = new TextView(this);
+        title.setText(mTitle == null || mTitle.isEmpty() ? "Video" : mTitle);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(15);
+        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        titles.addView(title);
+        TextView subtitle = new TextView(this);
+        subtitle.setText(mHost == null ? "" : mHost);
+        subtitle.setTextColor(0xB3FFFFFF);
+        subtitle.setTextSize(11);
+        subtitle.setSingleLine(true);
+        titles.addView(subtitle);
+        bar.addView(
+                titles,
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        mLockIcon = new IconView(this, "unlock");
-        mLockIcon.setOnClickListener(v -> toggleLock());
-        bar.addView(mLockIcon, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        IconView cc = new IconView(this, "cc");
+        cc.setOnClickListener(v -> toggleSubtitles());
+        bar.addView(cc, iconParams());
+
+        IconView gear = new IconView(this, "settings");
+        gear.setOnClickListener(
+                v -> {
+                    mAspectMode = (mAspectMode + 1) % 3;
+                    mFitWide = mAspectMode == 1;
+                    layoutSurface();
+                    Toast.makeText(
+                                    this,
+                                    new String[] {"Fit", "Cover", "Stretch"}[mAspectMode]
+                                            + " aspect",
+                                    Toast.LENGTH_SHORT)
+                            .show();
+                    scheduleHide();
+                });
+        bar.addView(gear, iconParams());
+
+        IconView headphones = new IconView(this, "headphones");
+        headphones.setOnClickListener(
+                v -> {
+                    mBackgroundPlay = !mBackgroundPlay;
+                    Toast.makeText(
+                                    this,
+                                    "Background play " + (mBackgroundPlay ? "on" : "off"),
+                                    Toast.LENGTH_SHORT)
+                            .show();
+                    scheduleHide();
+                });
+        bar.addView(headphones, iconParams());
+
+        IconView overflow = new IconView(this, "dots");
+        overflow.setOnClickListener(v -> showSheet(true));
+        bar.addView(overflow, iconParams());
 
         mTopBar = bar;
         mRoot.addView(bar, new FrameLayout.LayoutParams(
@@ -259,99 +320,138 @@ public class FlashPlayerActivity extends Activity {
                 Gravity.TOP));
     }
 
+    private LinearLayout.LayoutParams iconParams() {
+        LinearLayout.LayoutParams params =
+                new LinearLayout.LayoutParams(dp(36), dp(36));
+        params.setMargins(dp(2), 0, dp(2), 0);
+        return params;
+    }
+
+    private void buildSubtitleAndLock() {
+        mSubtitleView = new TextView(this);
+        mSubtitleView.setTextColor(Color.WHITE);
+        mSubtitleView.setTextSize(15);
+        mSubtitleView.setGravity(Gravity.CENTER);
+        mSubtitleView.setBackgroundColor(0x99000000);
+        mSubtitleView.setPadding(dp(10), dp(4), dp(10), dp(4));
+        mSubtitleView.setVisibility(View.GONE);
+        FrameLayout.LayoutParams subtitleParams =
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        subtitleParams.bottomMargin = dp(64);
+        mRoot.addView(mSubtitleView, subtitleParams);
+
+        // The reference top bar has no lock glyph, so the lock lives in the
+        // sheet; this overlay only appears while locked, on tap, to unlock.
+        mLockIcon = new IconView(this, "lock");
+        mLockIcon.setOnClickListener(v -> toggleLock());
+        mLockIcon.setVisibility(View.GONE);
+        FrameLayout.LayoutParams lockParams =
+                new FrameLayout.LayoutParams(dp(36), dp(36), Gravity.TOP | Gravity.END);
+        lockParams.setMargins(0, dp(6), dp(6), 0);
+        mRoot.addView(mLockIcon, lockParams);
+    }
+
+    private void toggleSubtitles() {
+        boolean hasText = false;
+        try {
+            for (androidx.media3.common.Tracks.Group group : mPlayer.getCurrentTracks().groups) {
+                if (group.isSupported
+                        && group.type
+                                == androidx.media3.common.C.TRACK_TYPE_TEXT) {
+                    hasText = true;
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            // Tracks probing is best-effort.
+        }
+        Toast.makeText(
+                        this,
+                        hasText
+                                ? "Subtitle track found; rendering embedded text is not wired yet"
+                                : "This video has no subtitle track",
+                        Toast.LENGTH_SHORT)
+                .show();
+    }
+
+    private IconView circle(String icon, int size, View.OnClickListener onClick) {
+        IconView view = new IconView(this, icon);
+        view.setOnClickListener(onClick);
+        return view;
+    }
+
+    private void buildCenterControls() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+
+        IconView prev = circle("prev", dp(52), v -> { seekBy(-10_000); showRipple(false); });
+        row.addView(prev, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        mPlayPauseIcon =
+                circle(
+                        "pause",
+                        dp(72),
+                        v -> {
+                            if (mPlayer.isPlaying()) {
+                                mPlayer.pause();
+                            } else {
+                                if (mPlayer.getPlaybackState() == Player.STATE_ENDED) {
+                                    mPlayer.seekTo(0);
+                                }
+                                mPlayer.play();
+                            }
+                            scheduleHide();
+                        });
+        LinearLayout.LayoutParams centerParams =
+                new LinearLayout.LayoutParams(dp(72), dp(72));
+        centerParams.setMargins(dp(14), 0, dp(14), 0);
+        row.addView(mPlayPauseIcon, centerParams);
+
+        IconView next = circle("next", dp(52), v -> { seekBy(10_000); showRipple(true); });
+        row.addView(next, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        mCenterControls = row;
+        mRoot.addView(row, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+    }
+
     private void buildBottomBar() {
         LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.VERTICAL);
-        bar.setBackground(
-                new GradientDrawable(
-                        GradientDrawable.Orientation.BOTTOM_TOP,
-                        new int[] {0xCC000000, 0x00000000}));
-        bar.setPadding(dp(10), dp(6), dp(10), dp(4));
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(10), 0, dp(6), dp(4));
 
-        LinearLayout timeRow = new LinearLayout(this);
-        timeRow.setOrientation(LinearLayout.HORIZONTAL);
-        timeRow.setGravity(Gravity.CENTER_VERTICAL);
-        mElapsedView = makeTimeLabel("0:00");
-        mTotalView = makeTimeLabel("0:00");
-        mSeekBar = new SeekBar(this);
-        mSeekBar.setMax(1000);
-        mSeekBar.setScaleY(0.55f);
-        mSeekBar.setOnSeekBarChangeListener(
-                new SeekBar.OnSeekBarChangeListener() {
-                    @Override
-                    public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                        if (fromUser) {
-                            long duration = mPlayer.getDuration();
-                            if (duration > 0) {
-                                showHud(formatTime(progress * duration / 1000)
-                                        + " / " + formatTime(duration));
-                            }
-                        }
-                    }
+        mTimeView = new TextView(this);
+        mTimeView.setTextColor(Color.WHITE);
+        mTimeView.setTextSize(13);
+        mTimeView.setText("0:00 / 0:00");
+        mTimeView.setShadowLayer(4, 0, 1, Color.BLACK);
+        mTimeView.setGravity(Gravity.CENTER_VERTICAL);
+        mTimeView.setIncludeFontPadding(false);
+        mTimeView.setPadding(dp(2), 0, dp(2), 0);
+        bar.addView(mTimeView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(30)));
 
-                    @Override
-                    public void onStartTrackingTouch(SeekBar seekBar) {
-                        mSeekBarTracking = true;
-                        mHandler.removeCallbacks(mHideControls);
-                    }
+        mSeekBar = new SeekLine(this);
+        LinearLayout.LayoutParams seekParams =
+                new LinearLayout.LayoutParams(0, dp(30), 1f);
+        seekParams.setMargins(dp(10), 0, dp(10), 0);
+        bar.addView(mSeekBar, seekParams);
 
-                    @Override
-                    public void onStopTrackingTouch(SeekBar seekBar) {
-                        mSeekBarTracking = false;
-                        long duration = mPlayer.getDuration();
-                        if (duration > 0) mPlayer.seekTo(seekBar.getProgress() * duration / 1000);
-                        hideHud();
-                        scheduleHide();
-                    }
-                });
-        timeRow.addView(mElapsedView);
-        timeRow.addView(mSeekBar, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        timeRow.addView(mTotalView);
-        bar.addView(timeRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.CENTER_VERTICAL);
-
-        IconView rewind = new IconView(this, "rewind");
-        rewind.setOnClickListener(v -> { seekBy(-10_000); showRipple(false); });
-        actions.addView(rewind, new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        mPlayPauseIcon = new IconView(this, "pause");
-        mPlayPauseIcon.setOnClickListener(
+        IconView expand = new IconView(this, "expand");
+        expand.setOnClickListener(
                 v -> {
-                    if (mPlayer.isPlaying()) {
-                        mPlayer.pause();
-                    } else {
-                        if (mPlayer.getPlaybackState() == Player.STATE_ENDED) mPlayer.seekTo(0);
-                        mPlayer.play();
-                    }
+                    mAspectMode = mAspectMode == 0 ? 1 : 0;
+                    mFitWide = mAspectMode == 1;
+                    layoutSurface();
                     scheduleHide();
                 });
-        actions.addView(mPlayPauseIcon, new LinearLayout.LayoutParams(dp(48), dp(40)));
-
-        IconView forward = new IconView(this, "forward");
-        forward.setOnClickListener(v -> { seekBy(10_000); showRipple(true); });
-        actions.addView(forward, new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        actions.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
-
-        mSpeedButton = new TextView(this);
-        mSpeedButton.setTextColor(Color.WHITE);
-        mSpeedButton.setTextSize(12);
-        mSpeedButton.setGravity(Gravity.CENTER);
-        mSpeedButton.setText("1x");
-        mSpeedButton.setOnClickListener(v -> cycleSpeed());
-        actions.addView(mSpeedButton, new LinearLayout.LayoutParams(dp(44), dp(40)));
-
-        IconView settings = new IconView(this, "settings");
-        settings.setOnClickListener(v -> showSheet(true));
-        actions.addView(settings, new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        bar.addView(actions, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        bar.addView(expand, new LinearLayout.LayoutParams(dp(30), dp(30)));
 
         mBottomBar = bar;
         mRoot.addView(bar, new FrameLayout.LayoutParams(
@@ -359,14 +459,97 @@ public class FlashPlayerActivity extends Activity {
                 Gravity.BOTTOM));
     }
 
-    private TextView makeTimeLabel(String text) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextColor(Color.WHITE);
-        view.setTextSize(11);
-        view.setPadding(dp(4), 0, dp(4), 0);
-        return view;
+    /** Thin ReVanced-style progress line: red gradient, pink thumb, dashed rest. */
+    private class SeekLine extends View {
+        private long mDuration;
+        private long mPosition;
+        private long mBufferedMs;
+        private boolean mDragging;
+        private long mDragTargetMs;
+
+        SeekLine(android.content.Context context) {
+            super(context);
+        }
+
+        void setProgress(long positionMs, long durationMs, long bufferedMs) {
+            mPosition = positionMs;
+            mDuration = durationMs;
+            mBufferedMs = bufferedMs;
+            if (!mDragging) invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            if (mDuration <= 0) return;
+            float y = getHeight() / 2f;
+            float width = getWidth();
+            float pos = mDragging ? mDragTargetMs : mPosition;
+            float px = width * clamp(pos, 0, mDuration) / mDuration;
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paint.setStrokeCap(Paint.Cap.BUTT);
+            // Measured from the reference frame (1672px wide, 408dpi device):
+            // thin translucent base track, brighter chapter ticks on a ~79dp
+            // period, red-to-magenta progress, solid pink thumb.
+            paint.setStrokeWidth(dp(2.5f));
+            paint.setColor(0x4DFFFFFF);
+            canvas.drawLine(0, y, width, y, paint);
+            paint.setStrokeWidth(dp(3.5f));
+            paint.setColor(0x94FFFFFF);
+            float tick = dp(19);
+            float period = dp(79);
+            for (float tx = period * 0.45f; tx + tick < width; tx += period) {
+                canvas.drawLine(tx, y, tx + tick, y, paint);
+            }
+            if (px > dp(1)) {
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setShader(
+                        new android.graphics.LinearGradient(
+                                0, y, px, y,
+                                0xFFFF0754, 0xFFF333A2,
+                                android.graphics.Shader.TileMode.CLAMP));
+                canvas.drawLine(0, y, px, y, paint);
+                paint.setShader(null);
+            }
+            paint.setColor(0xFFFF0F55);
+            canvas.drawCircle(px, y, dp(8), paint);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (mDuration <= 0) return false;
+            float x = Math.max(0, Math.min(event.getX(), getWidth()));
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    mDragging = true;
+                    mSeekBarTracking = true;
+                    mHandler.removeCallbacks(mHideControls);
+                    mDragTargetMs = (long) (x / getWidth() * mDuration);
+                    showHud(formatTime(mDragTargetMs) + " / " + formatTime(mDuration));
+                    invalidate();
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (mDragging) {
+                        mDragTargetMs = (long) (x / getWidth() * mDuration);
+                        showHud(formatTime(mDragTargetMs) + " / " + formatTime(mDuration));
+                        invalidate();
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (mDragging) {
+                        mDragging = false;
+                        mSeekBarTracking = false;
+                        mPlayer.seekTo(mDragTargetMs);
+                        hideHud();
+                        scheduleHide();
+                        invalidate();
+                    }
+                    return true;
+            }
+            return false;
+        }
     }
+
 
     private void buildSheet() {
         mScrim = new View(this);
@@ -385,29 +568,51 @@ public class FlashPlayerActivity extends Activity {
         sheet.setPadding(dp(16), dp(12), dp(16), dp(16));
         sheet.setClickable(true);
 
-        TextView speedLabel = makeSheetLabel("Playback speed");
-        sheet.addView(speedLabel);
-        LinearLayout chips = new LinearLayout(this);
-        chips.setOrientation(LinearLayout.HORIZONTAL);
-        for (float speed : SPEEDS) {
-            TextView chip = new TextView(this);
-            chip.setText(speed == (int) speed ? ((int) speed) + "x" : speed + "x");
-            chip.setTextColor(Color.WHITE);
-            chip.setTextSize(12);
-            chip.setGravity(Gravity.CENTER);
-            chip.setTag(speed);
-            chip.setOnClickListener(
-                    v -> {
-                        setSpeed((Float) v.getTag());
-                        showSheet(false);
-                    });
-            LinearLayout.LayoutParams params =
-                    new LinearLayout.LayoutParams(0, dp(32), 1f);
-            params.setMargins(dp(2), 0, dp(2), 0);
-            chips.addView(chip, params);
-        }
-        sheet.addView(chips, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout speedRow = makeNavRow("Playback speed", speedText(mSpeed));
+        mSpeedValue = (TextView) ((LinearLayout) speedRow).getChildAt(1);
+        speedRow.setOnClickListener(
+                v -> {
+                    String[] opts = new String[SPEEDS.length];
+                    int sel = 0;
+                    for (int i = 0; i < SPEEDS.length; i++) {
+                        opts[i] = speedText(SPEEDS[i]);
+                        if (SPEEDS[i] == mSpeed) sel = i;
+                    }
+                    showSubSheet(
+                            "Playback speed",
+                            opts,
+                            sel,
+                            i -> {
+                                setSpeed(SPEEDS[i]);
+                            });
+                });
+        sheet.addView(speedRow);
+
+        LinearLayout qualityRow = makeNavRow("Quality", "Auto");
+        mQualityValue = (TextView) ((LinearLayout) qualityRow).getChildAt(1);
+        qualityRow.setOnClickListener(
+                v -> {
+                    rebuildQualityOptions();
+                    int sel = 0;
+                    for (int i = 0; i < mQualityOptions.length; i++) {
+                        if (mQualityOptions[i].equals(qualityText(mQualityHeight))) sel = i;
+                    }
+                    showSubSheet(
+                            "Quality",
+                            mQualityOptions,
+                            sel,
+                            i -> {
+                                String label = mQualityOptions[i];
+                                int h = label.equals("Auto")
+                                        ? -1
+                                        : Integer.parseInt(
+                                                label.replaceAll("[^0-9]", ""));
+                                setQuality(h);
+                                mQualityHeight = h;
+                                mQualityValue.setText(qualityText(h));
+                            });
+                });
+        sheet.addView(qualityRow);
 
         sheet.addView(makeSheetLabel("Options"));
         LinearLayout loopRow = makeSheetRow("Loop video", "Off");
@@ -440,6 +645,15 @@ public class FlashPlayerActivity extends Activity {
                 });
         sheet.addView(autoRow);
 
+        LinearLayout lockRow = makeSheetRow("Lock controls", "Off");
+        lockRow.setOnClickListener(
+                v -> {
+                    toggleLock();
+                    ((TextView) ((LinearLayout) v).getChildAt(1)).setText(mLocked ? "On" : "Off");
+                    if (!mLocked) showSheet(true);
+                });
+        sheet.addView(lockRow);
+
         mSheet = sheet;
         mSheet.setVisibility(View.GONE);
         mRoot.addView(mSheet, new FrameLayout.LayoutParams(
@@ -454,6 +668,152 @@ public class FlashPlayerActivity extends Activity {
         view.setTextSize(12);
         view.setPadding(0, dp(8), 0, dp(8));
         return view;
+    }
+
+    private String speedText(float speed) {
+        if (speed == 1f) return "Normal";
+        return (speed == (int) speed ? ((int) speed) + "x" : speed + "x");
+    }
+
+    private String qualityText(int height) {
+        return height < 0 ? "Auto" : height + "p";
+    }
+
+    private void rebuildQualityOptions() {
+        java.util.TreeSet<Integer> heights = new java.util.TreeSet<>(java.util.Collections.reverseOrder());
+        try {
+            for (androidx.media3.common.Tracks.Group group : mPlayer.getCurrentTracks().groups) {
+                if (group.type != androidx.media3.common.C.TRACK_TYPE_VIDEO) continue;
+                for (int i = 0; i < group.length; i++) {
+                    int h = group.getFormat(i).height;
+                    if (h > 0) heights.add(h);
+                }
+            }
+        } catch (Exception e) {
+            // Fall through with whatever was collected.
+        }
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        labels.add("Auto");
+        if (heights.isEmpty()) {
+            labels.add("Source");
+        } else {
+            for (int h : heights) labels.add(h + "p");
+        }
+        mQualityOptions = labels.toArray(new String[0]);
+    }
+
+    private void setQuality(int height) {
+        try {
+            androidx.media3.common.TrackSelectionParameters.Builder builder =
+                    mPlayer.getTrackSelectionParameters().buildUpon();
+            if (height < 0) {
+                builder.setMaxVideoSize(Integer.MAX_VALUE, Integer.MAX_VALUE);
+                builder.setMinVideoSize(Integer.MIN_VALUE, Integer.MIN_VALUE);
+                builder.setForceLowestBitrate(false);
+            } else {
+                builder.setMaxVideoSize(Integer.MAX_VALUE, height);
+                builder.setMinVideoSize(0, height);
+            }
+            mPlayer.setTrackSelectionParameters(builder.build());
+        } catch (Exception e) {
+            Toast.makeText(this, "Quality change not supported for this video",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private LinearLayout makeNavRow(String title, String value) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(12), 0, dp(12));
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(Color.WHITE);
+        titleView.setTextSize(14);
+        row.addView(titleView, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView valueView = new TextView(this);
+        valueView.setText(value);
+        valueView.setTextColor(Color.WHITE);
+        valueView.setTextSize(14);
+        row.addView(valueView);
+        IconView chevron = new IconView(this, "next");
+        chevron.setScale(0.55f);
+        chevron.setClickable(false);
+        row.addView(chevron, new LinearLayout.LayoutParams(dp(18), dp(18)));
+        return row;
+    }
+
+    private void showSubSheet(
+            String title, String[] options, int selected, java.util.function.IntConsumer onPick) {
+        if (mSubSheet == null) {
+            mSubSheet = new LinearLayout(this);
+            mSubSheet.setOrientation(LinearLayout.VERTICAL);
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(0xFF212121);
+            background.setCornerRadii(new float[] {
+                    dp(12), dp(12), dp(12), dp(12), 0, 0, 0, 0});
+            mSubSheet.setBackground(background);
+            mSubSheet.setPadding(dp(16), dp(8), dp(16), dp(12));
+            mSubSheet.setClickable(true);
+            mSubSheet.setVisibility(View.GONE);
+            mRoot.addView(
+                    mSubSheet,
+                    new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.BOTTOM));
+        }
+        mSubSheet.removeAllViews();
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+        IconView back = new IconView(this, "back");
+        back.setClickable(false);
+        headerRow.addView(back, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        TextView header = new TextView(this);
+        header.setText(title);
+        header.setTextColor(Color.WHITE);
+        header.setTextSize(16);
+        header.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        header.setPadding(dp(10), dp(6), 0, dp(10));
+        headerRow.addView(header, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        back.setOnClickListener(
+                v -> {
+                    mSubSheet.setVisibility(View.GONE);
+                    showSheet(true);
+                });
+        mSubSheet.addView(headerRow);
+        for (int i = 0; i < options.length; i++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(11), 0, dp(11));
+            IconView check = new IconView(this, "check");
+            check.setClickable(false);
+            check.setVisibility(i == selected ? View.VISIBLE : View.INVISIBLE);
+            row.addView(check, new LinearLayout.LayoutParams(dp(22), dp(22)));
+            TextView label = new TextView(this);
+            label.setText(options[i]);
+            label.setTextColor(i == selected ? Color.WHITE : 0xDEFFFFFF);
+            label.setTextSize(14);
+            label.setPadding(dp(14), 0, 0, 0);
+            row.addView(label, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            final int index = i;
+            row.setOnClickListener(
+                    v -> {
+                        onPick.accept(index);
+                        mSubSheet.setVisibility(View.GONE);
+                        showSheet(true);
+                    });
+            mSubSheet.addView(row);
+        }
+        mHandler.removeCallbacks(mHideControls);
+        mSheet.setVisibility(View.GONE);
+        mSubSheet.setVisibility(View.VISIBLE);
+        mScrim.setVisibility(View.VISIBLE);
     }
 
     private LinearLayout makeSheetRow(String title, String value) {
@@ -475,22 +835,13 @@ public class FlashPlayerActivity extends Activity {
     }
 
     private void showSheet(boolean show) {
+        if (mSubSheet != null) mSubSheet.setVisibility(View.GONE);
         mSheet.setVisibility(show ? View.VISIBLE : View.GONE);
         mScrim.setVisibility(show ? View.VISIBLE : View.GONE);
         if (show) {
             mHandler.removeCallbacks(mHideControls);
-            refreshSpeedChips();
         } else {
             scheduleHide();
-        }
-    }
-
-    private void refreshSpeedChips() {
-        LinearLayout chips = (LinearLayout) ((LinearLayout) mSheet).getChildAt(1);
-        for (int i = 0; i < chips.getChildCount(); i++) {
-            TextView chip = (TextView) chips.getChildAt(i);
-            boolean active = (Float) chip.getTag() == mSpeed;
-            chip.setBackgroundColor(active ? 0xFFFF0000 : 0xFF333333);
         }
     }
 
@@ -562,6 +913,7 @@ public class FlashPlayerActivity extends Activity {
         public boolean onSingleTapConfirmed(MotionEvent e) {
             if (mLocked) {
                 mLockIcon.setVisibility(View.VISIBLE);
+                mHandler.removeCallbacks(mHideControls);
                 mHandler.postDelayed(() -> { if (mLocked) mLockIcon.setVisibility(View.GONE); },
                         HIDE_DELAY_MS);
                 return true;
@@ -664,7 +1016,12 @@ public class FlashPlayerActivity extends Activity {
     private void setSpeed(float speed) {
         mSpeed = speed;
         applySpeed();
-        mSpeedButton.setText(speed == (int) speed ? ((int) speed) + "x" : speed + "x");
+        if (mSpeedButton != null) {
+            mSpeedButton.setText(speedText(speed));
+        }
+        if (mSpeedValue != null) {
+            mSpeedValue.setText(speedText(speed));
+        }
         scheduleHide();
     }
 
@@ -682,11 +1039,11 @@ public class FlashPlayerActivity extends Activity {
         if (mPlayer == null) return;
         long position = mPlayer.getCurrentPosition();
         long duration = mPlayer.getDuration();
-        mElapsedView.setText(formatTime(mDragSeeking ? mDragSeekTarget : position));
-        mTotalView.setText(duration > 0 ? formatTime(duration) : "0:00");
-        if (!mSeekBarTracking && !mDragSeeking && duration > 0) {
-            mSeekBar.setProgress((int) (position * 1000 / duration));
-        }
+        mTimeView.setText(
+                formatTime(mDragSeeking ? mDragSeekTarget : position)
+                        + " / "
+                        + (duration > 0 ? formatTime(duration) : "0:00"));
+        mSeekBar.setProgress(position, duration, mPlayer.getBufferedPosition());
     }
 
     private static String formatTime(long ms) {
@@ -714,6 +1071,7 @@ public class FlashPlayerActivity extends Activity {
         mControlsVisible = visible;
         mTopBar.setVisibility(visible ? View.VISIBLE : View.GONE);
         mBottomBar.setVisibility(visible ? View.VISIBLE : View.GONE);
+        mCenterControls.setVisibility(visible && !mLocked ? View.VISIBLE : View.GONE);
         if (visible) {
             scheduleHide();
         } else {
@@ -731,21 +1089,20 @@ public class FlashPlayerActivity extends Activity {
 
     private void toggleLock() {
         mLocked = !mLocked;
-        mLockIcon.setIcon(mLocked ? "lock" : "unlock");
         if (mLocked) {
-            setControlsVisible(true);
+            mLockIcon.setIcon("lock");
+            mLockIcon.setVisibility(View.VISIBLE);
+            mTopBar.setVisibility(View.GONE);
             mBottomBar.setVisibility(View.GONE);
+            mCenterControls.setVisibility(View.GONE);
             mHandler.removeCallbacks(mHideControls);
             mHandler.postDelayed(
                     () -> {
-                        if (mLocked) {
-                            mTopBar.setVisibility(View.GONE);
-                            mLockIcon.setVisibility(View.GONE);
-                        }
+                        if (mLocked) mLockIcon.setVisibility(View.GONE);
                     },
                     HIDE_DELAY_MS);
         } else {
-            mLockIcon.setVisibility(View.VISIBLE);
+            mLockIcon.setVisibility(View.GONE);
             setControlsVisible(true);
         }
     }
@@ -765,11 +1122,26 @@ public class FlashPlayerActivity extends Activity {
         int height = mRoot.getHeight();
         if (width == 0 || height == 0) return;
         float videoRatio = (float) mVideoWidth / mVideoHeight;
-        int w = width;
-        int h = Math.round(w / videoRatio);
-        if (h > height) {
+        int w;
+        int h;
+        if (mAspectMode == 2) {
+            w = width;
             h = height;
-            w = Math.round(h * videoRatio);
+        } else if (mAspectMode == 1) {
+            // Cover: fill the screen, cropping the overflowing axis.
+            w = width;
+            h = Math.round(w / videoRatio);
+            if (h < height) {
+                h = height;
+                w = Math.round(h * videoRatio);
+            }
+        } else {
+            w = width;
+            h = Math.round(w / videoRatio);
+            if (h > height) {
+                h = height;
+                w = Math.round(h * videoRatio);
+            }
         }
         ViewGroup.LayoutParams params = mSurfaceView.getLayoutParams();
         params.width = w;
@@ -838,7 +1210,7 @@ public class FlashPlayerActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
-        if (mPlayer != null) {
+        if (mPlayer != null && !mBackgroundPlay) {
             mWasPlayingOnPause = mPlayer.isPlaying();
             mPlayer.pause();
         }
@@ -847,7 +1219,7 @@ public class FlashPlayerActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
-        if (mPlayer != null) mPlayer.pause();
+        if (mPlayer != null && !mBackgroundPlay) mPlayer.pause();
     }
 
     @Override
@@ -888,7 +1260,9 @@ public class FlashPlayerActivity extends Activity {
 
         @Override
         protected void onDraw(Canvas canvas) {
-            float s = Math.min(getWidth(), getHeight()) / 24f;
+            // The glyph keeps a fixed share of the touch box so shrinking the
+            // bars does not also shrink the icon inside them.
+            float s = Math.min(getWidth(), getHeight()) / 24f * 0.62f;
             canvas.save();
             canvas.translate((getWidth() - 24 * s) / 2f, (getHeight() - 24 * s) / 2f);
             canvas.scale(s, s);
@@ -901,6 +1275,44 @@ public class FlashPlayerActivity extends Activity {
                     path.lineTo(7, 12);
                     path.lineTo(15, 20);
                     canvas.drawPath(path, mPaint);
+                    break;
+                case "check":
+                    path.moveTo(5, 13);
+                    path.lineTo(10, 18);
+                    path.lineTo(19, 7);
+                    canvas.drawPath(path, mPaint);
+                    break;
+                case "chevron":
+                    path.moveTo(6, 9);
+                    path.lineTo(12, 15);
+                    path.lineTo(18, 9);
+                    canvas.drawPath(path, mPaint);
+                    break;
+                case "prev":
+                    path.moveTo(16, 5);
+                    path.lineTo(8, 12);
+                    path.lineTo(16, 19);
+                    path.close();
+                    canvas.drawPath(path, fill);
+                    canvas.drawRect(5, 5, 7, 19, fill);
+                    break;
+                case "next":
+                    path.moveTo(8, 5);
+                    path.lineTo(16, 12);
+                    path.lineTo(8, 19);
+                    path.close();
+                    canvas.drawPath(path, fill);
+                    canvas.drawRect(17, 5, 19, 19, fill);
+                    break;
+                case "expand":
+                    canvas.drawLine(5, 9, 5, 5, mPaint);
+                    canvas.drawLine(5, 5, 9, 5, mPaint);
+                    canvas.drawLine(15, 5, 19, 5, mPaint);
+                    canvas.drawLine(19, 5, 19, 9, mPaint);
+                    canvas.drawLine(19, 15, 19, 19, mPaint);
+                    canvas.drawLine(19, 19, 15, 19, mPaint);
+                    canvas.drawLine(9, 19, 5, 19, mPaint);
+                    canvas.drawLine(5, 19, 5, 15, mPaint);
                     break;
                 case "play":
                     path.moveTo(8, 5);
@@ -950,6 +1362,46 @@ public class FlashPlayerActivity extends Activity {
                         float y2 = 12 + (float) Math.sin(angle) * 9f;
                         canvas.drawLine(x1, y1, x2, y2, mPaint);
                     }
+                    break;
+                case "cast":
+                    canvas.drawRoundRect(3, 4, 21, 14, 2, 2, mPaint);
+                    canvas.drawCircle(6, 21, 1.3f, fill);
+                    canvas.drawArc(new android.graphics.RectF(3, 18, 9, 24), 270, 90, false, mPaint);
+                    canvas.drawArc(new android.graphics.RectF(0, 15, 12, 27), 270, 90, false, mPaint);
+                    break;
+                case "cc":
+                    canvas.drawRoundRect(3, 6, 21, 18, 3, 3, mPaint);
+                    Paint ccText = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    ccText.setColor(mPaint.getColor());
+                    ccText.setStyle(Paint.Style.FILL);
+                    ccText.setTextAlign(Paint.Align.CENTER);
+                    ccText.setTextSize(8f);
+                    ccText.setFakeBoldText(true);
+                    canvas.drawText("CC", 12, 14.9f, ccText);
+                    break;
+                case "headphones":
+                    path.moveTo(4, 15);
+                    path.lineTo(4, 13);
+                    path.arcTo(new android.graphics.RectF(4, 4, 20, 20), 180, 180);
+                    path.lineTo(20, 15);
+                    canvas.drawPath(path, mPaint);
+                    canvas.drawRoundRect(3, 13, 7, 20, 2, 2, fill);
+                    canvas.drawRoundRect(17, 13, 21, 20, 2, 2, fill);
+                    break;
+                case "monogram":
+                    canvas.drawCircle(12, 12, 8.5f, mPaint);
+                    Paint monoText = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    monoText.setColor(mPaint.getColor());
+                    monoText.setStyle(Paint.Style.FILL);
+                    monoText.setTextAlign(Paint.Align.CENTER);
+                    monoText.setTextSize(10f);
+                    monoText.setFakeBoldText(true);
+                    canvas.drawText("T", 12, 15.6f, monoText);
+                    break;
+                case "dots":
+                    canvas.drawCircle(12, 5.5f, 1.6f, fill);
+                    canvas.drawCircle(12, 12, 1.6f, fill);
+                    canvas.drawCircle(12, 18.5f, 1.6f, fill);
                     break;
             }
             canvas.restore();
