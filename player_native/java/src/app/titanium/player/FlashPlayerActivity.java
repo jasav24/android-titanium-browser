@@ -66,6 +66,9 @@ public class FlashPlayerActivity extends Activity {
     private IconView mPlayPauseIcon;
     private IconView mLockIcon;
     private TextView mSubtitleView;
+    private IconView mCcButton;
+    private boolean mSubtitlesEnabled;
+    private boolean mHasTextTrack;
     private View mSheet;
     private View mScrim;
     private LinearLayout mSubSheet;
@@ -177,6 +180,32 @@ public class FlashPlayerActivity extends Activity {
                     }
 
                     @Override
+                    public void onTracksChanged(androidx.media3.common.Tracks tracks) {
+                        boolean has = false;
+                        try {
+                            for (androidx.media3.common.Tracks.Group group : tracks.getGroups()) {
+                                if (group.isSupported()
+                                        && group.getType()
+                                                == androidx.media3.common.C.TRACK_TYPE_TEXT) {
+                                    has = true;
+                                    break;
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Best-effort; keep previous state.
+                            return;
+                        }
+                        mHasTextTrack = has;
+                        if (mCcButton != null) {
+                            mCcButton.setVisibility(has ? View.VISIBLE : View.GONE);
+                        }
+                        if (!has) {
+                            mSubtitlesEnabled = false;
+                            mSubtitleView.setVisibility(View.GONE);
+                        }
+                    }
+
+                    @Override
                     public void onPlayerError(PlaybackException error) {
                         Toast.makeText(
                                         FlashPlayerActivity.this,
@@ -277,9 +306,10 @@ public class FlashPlayerActivity extends Activity {
                 titles,
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        IconView cc = new IconView(this, "cc");
-        cc.setOnClickListener(v -> toggleSubtitles());
-        bar.addView(cc, iconParams());
+        mCcButton = new IconView(this, "cc");
+        mCcButton.setVisibility(View.GONE);
+        mCcButton.setOnClickListener(v -> toggleSubtitles());
+        bar.addView(mCcButton, iconParams());
 
         IconView gear = new IconView(this, "settings");
         gear.setOnClickListener(
@@ -355,26 +385,20 @@ public class FlashPlayerActivity extends Activity {
     }
 
     private void toggleSubtitles() {
-        boolean hasText = false;
-        try {
-            for (androidx.media3.common.Tracks.Group group : mPlayer.getCurrentTracks().groups) {
-                if (group.isSupported
-                        && group.type
-                                == androidx.media3.common.C.TRACK_TYPE_TEXT) {
-                    hasText = true;
-                    break;
-                }
-            }
-        } catch (Exception e) {
-            // Tracks probing is best-effort.
+        if (!mHasTextTrack) {
+            Toast.makeText(this, "This video has no subtitle track", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        mSubtitlesEnabled = !mSubtitlesEnabled;
+        if (!mSubtitlesEnabled) {
+            mSubtitleView.setVisibility(View.GONE);
         }
         Toast.makeText(
                         this,
-                        hasText
-                                ? "Subtitle track found; rendering embedded text is not wired yet"
-                                : "This video has no subtitle track",
+                        "Subtitles " + (mSubtitlesEnabled ? "on" : "off"),
                         Toast.LENGTH_SHORT)
                 .show();
+        scheduleHide();
     }
 
     private IconView circle(String icon, int size, View.OnClickListener onClick) {
@@ -682,10 +706,10 @@ public class FlashPlayerActivity extends Activity {
     private void rebuildQualityOptions() {
         java.util.TreeSet<Integer> heights = new java.util.TreeSet<>(java.util.Collections.reverseOrder());
         try {
-            for (androidx.media3.common.Tracks.Group group : mPlayer.getCurrentTracks().groups) {
-                if (group.type != androidx.media3.common.C.TRACK_TYPE_VIDEO) continue;
+            for (androidx.media3.common.Tracks.Group group : mPlayer.getCurrentTracks().getGroups()) {
+                if (group.getType() != androidx.media3.common.C.TRACK_TYPE_VIDEO) continue;
                 for (int i = 0; i < group.length; i++) {
-                    int h = group.getFormat(i).height;
+                    int h = group.getTrackFormat(i).height;
                     if (h > 0) heights.add(h);
                 }
             }
@@ -1044,6 +1068,32 @@ public class FlashPlayerActivity extends Activity {
                         + " / "
                         + (duration > 0 ? formatTime(duration) : "0:00"));
         mSeekBar.setProgress(position, duration, mPlayer.getBufferedPosition());
+        if (mSubtitlesEnabled) {
+            updateSubtitleText();
+        }
+    }
+
+    private void updateSubtitleText() {
+        try {
+            if (!mPlayer.isCommandAvailable(Player.COMMAND_GET_TEXT)) {
+                mSubtitleView.setVisibility(View.GONE);
+                return;
+            }
+            StringBuilder text = new StringBuilder();
+            for (androidx.media3.common.Cue cue : mPlayer.getCurrentCues().cues) {
+                if (cue.text == null) continue;
+                if (text.length() > 0) text.append('\n');
+                text.append(cue.text);
+            }
+            if (text.length() == 0) {
+                mSubtitleView.setVisibility(View.GONE);
+            } else {
+                mSubtitleView.setText(text);
+                mSubtitleView.setVisibility(View.VISIBLE);
+            }
+        } catch (Exception e) {
+            mSubtitleView.setVisibility(View.GONE);
+        }
     }
 
     private static String formatTime(long ms) {
