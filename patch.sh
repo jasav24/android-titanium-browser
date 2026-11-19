@@ -122,6 +122,11 @@ sed -i 's|^            modelList.add(buildManageWindowsItem());$|&\n        mode
 grep -qF 'R.id.flash_video_player_menu_id, false).with(' chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java || { echo "player: TabbedAppMenuPropertiesDelegate changed upstream; the menu row is missing" >&2; exit 1; }
 sed -i 's|boolean currentTabIsNtp = isTabNtp(currentTab);|&\n        if (id == R.id.flash_video_player_menu_id) { app.titanium.player.FlashVideoPlayer.openFromTab(this, currentTab); return true; }|' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
 grep -qF 'FlashVideoPlayer.openFromTab(this, currentTab);' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java || { echo "player: ChromeTabbedActivity.onMenuOrKeyboardAction changed upstream" >&2; exit 1; }
+# auto-open: attach the page-video watcher when native init finishes, after
+# the tab model selector exists (finishNativeInitialization is the only
+# unconditional once-at-startup hook ChromeTabbedActivity still has)
+sed -i 's|public void finishNativeInitialization() {|&\n        app.titanium.player.FlashVideoPlayer.attach(this);|' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+grep -qF 'FlashVideoPlayer.attach(this);' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java || { echo "player: ChromeTabbedActivity.finishNativeInitialization changed upstream; videos would not auto-open" >&2; exit 1; }
 
 cp -r $SCRIPT_DIR/extensions/dist titanium/
 cp $SCRIPT_DIR/extensions/stage_bundled_extensions.inc titanium/dist/

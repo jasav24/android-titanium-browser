@@ -199,10 +199,10 @@ public class FlashPlayerActivity extends Activity {
 
         mHudView = new TextView(this);
         mHudView.setTextColor(Color.WHITE);
-        mHudView.setTextSize(18);
+        mHudView.setTextSize(14);
         mHudView.setShadowLayer(6, 0, 2, Color.BLACK);
         mHudView.setBackgroundColor(0x99000000);
-        mHudView.setPadding(dp(14), dp(8), dp(14), dp(8));
+        mHudView.setPadding(dp(10), dp(5), dp(10), dp(5));
         mHudView.setVisibility(View.GONE);
         mRoot.addView(mHudView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -210,7 +210,7 @@ public class FlashPlayerActivity extends Activity {
 
         mBuffering = new ProgressBar(this);
         mBuffering.setVisibility(View.GONE);
-        mRoot.addView(mBuffering, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
+        mRoot.addView(mBuffering, new FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER));
 
         buildTopBar();
         buildBottomBar();
@@ -232,26 +232,26 @@ public class FlashPlayerActivity extends Activity {
                 new GradientDrawable(
                         GradientDrawable.Orientation.TOP_BOTTOM,
                         new int[] {0xCC000000, 0x00000000}));
-        bar.setPadding(dp(4), dp(4), dp(4), dp(12));
+        bar.setPadding(dp(6), dp(2), dp(6), dp(10));
 
         IconView back = new IconView(this, "back");
         back.setOnClickListener(v -> finish());
-        bar.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         mTitleView = new TextView(this);
         mTitleView.setText(mTitle == null || mTitle.isEmpty() ? "Video" : mTitle);
         mTitleView.setTextColor(Color.WHITE);
-        mTitleView.setTextSize(16);
+        mTitleView.setTextSize(14);
         mTitleView.setSingleLine(true);
         mTitleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams titleParams =
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        titleParams.setMargins(dp(8), 0, dp(8), 0);
+        titleParams.setMargins(dp(6), 0, dp(6), 0);
         bar.addView(mTitleView, titleParams);
 
         mLockIcon = new IconView(this, "unlock");
         mLockIcon.setOnClickListener(v -> toggleLock());
-        bar.addView(mLockIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        bar.addView(mLockIcon, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         mTopBar = bar;
         mRoot.addView(bar, new FrameLayout.LayoutParams(
@@ -266,7 +266,7 @@ public class FlashPlayerActivity extends Activity {
                 new GradientDrawable(
                         GradientDrawable.Orientation.BOTTOM_TOP,
                         new int[] {0xCC000000, 0x00000000}));
-        bar.setPadding(dp(12), dp(12), dp(12), dp(6));
+        bar.setPadding(dp(10), dp(6), dp(10), dp(4));
 
         LinearLayout timeRow = new LinearLayout(this);
         timeRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -275,6 +275,7 @@ public class FlashPlayerActivity extends Activity {
         mTotalView = makeTimeLabel("0:00");
         mSeekBar = new SeekBar(this);
         mSeekBar.setMax(1000);
+        mSeekBar.setScaleY(0.55f);
         mSeekBar.setOnSeekBarChangeListener(
                 new SeekBar.OnSeekBarChangeListener() {
                     @Override
@@ -316,7 +317,7 @@ public class FlashPlayerActivity extends Activity {
 
         IconView rewind = new IconView(this, "rewind");
         rewind.setOnClickListener(v -> { seekBy(-10_000); showRipple(false); });
-        actions.addView(rewind, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        actions.addView(rewind, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         mPlayPauseIcon = new IconView(this, "pause");
         mPlayPauseIcon.setOnClickListener(
@@ -329,28 +330,28 @@ public class FlashPlayerActivity extends Activity {
                     }
                     scheduleHide();
                 });
-        actions.addView(mPlayPauseIcon, new LinearLayout.LayoutParams(dp(56), dp(48)));
+        actions.addView(mPlayPauseIcon, new LinearLayout.LayoutParams(dp(48), dp(40)));
 
         IconView forward = new IconView(this, "forward");
         forward.setOnClickListener(v -> { seekBy(10_000); showRipple(true); });
-        actions.addView(forward, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        actions.addView(forward, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         actions.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
 
         mSpeedButton = new TextView(this);
         mSpeedButton.setTextColor(Color.WHITE);
-        mSpeedButton.setTextSize(14);
+        mSpeedButton.setTextSize(12);
         mSpeedButton.setGravity(Gravity.CENTER);
         mSpeedButton.setText("1x");
         mSpeedButton.setOnClickListener(v -> cycleSpeed());
-        actions.addView(mSpeedButton, new LinearLayout.LayoutParams(dp(56), dp(48)));
+        actions.addView(mSpeedButton, new LinearLayout.LayoutParams(dp(44), dp(40)));
 
         IconView settings = new IconView(this, "settings");
         settings.setOnClickListener(v -> showSheet(true));
-        actions.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        actions.addView(settings, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         bar.addView(actions, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
 
         mBottomBar = bar;
         mRoot.addView(bar, new FrameLayout.LayoutParams(
@@ -362,8 +363,8 @@ public class FlashPlayerActivity extends Activity {
         TextView view = new TextView(this);
         view.setText(text);
         view.setTextColor(Color.WHITE);
-        view.setTextSize(12);
-        view.setPadding(dp(6), 0, dp(6), 0);
+        view.setTextSize(11);
+        view.setPadding(dp(4), 0, dp(4), 0);
         return view;
     }
 
@@ -392,7 +393,7 @@ public class FlashPlayerActivity extends Activity {
             TextView chip = new TextView(this);
             chip.setText(speed == (int) speed ? ((int) speed) + "x" : speed + "x");
             chip.setTextColor(Color.WHITE);
-            chip.setTextSize(13);
+            chip.setTextSize(12);
             chip.setGravity(Gravity.CENTER);
             chip.setTag(speed);
             chip.setOnClickListener(
@@ -401,7 +402,7 @@ public class FlashPlayerActivity extends Activity {
                         showSheet(false);
                     });
             LinearLayout.LayoutParams params =
-                    new LinearLayout.LayoutParams(0, dp(36), 1f);
+                    new LinearLayout.LayoutParams(0, dp(32), 1f);
             params.setMargins(dp(2), 0, dp(2), 0);
             chips.addView(chip, params);
         }
@@ -426,6 +427,18 @@ public class FlashPlayerActivity extends Activity {
                     ((TextView) ((LinearLayout) v).getChildAt(1)).setText(mRotated ? "On" : "Off");
                 });
         sheet.addView(rotateRow);
+
+        LinearLayout autoRow =
+                makeSheetRow(
+                        "Open videos automatically",
+                        FlashVideoPlayer.isAutoEnabled(this) ? "On" : "Off");
+        autoRow.setOnClickListener(
+                v -> {
+                    boolean next = !FlashVideoPlayer.isAutoEnabled(this);
+                    FlashVideoPlayer.setAutoEnabled(this, next);
+                    ((TextView) ((LinearLayout) v).getChildAt(1)).setText(next ? "On" : "Off");
+                });
+        sheet.addView(autoRow);
 
         mSheet = sheet;
         mSheet.setVisibility(View.GONE);
@@ -862,7 +875,7 @@ public class FlashPlayerActivity extends Activity {
             mIcon = icon;
             mPaint.setColor(Color.WHITE);
             mPaint.setStyle(Paint.Style.STROKE);
-            mPaint.setStrokeWidth(dp(2));
+            mPaint.setStrokeWidth(dp(1.6f));
             mPaint.setStrokeCap(Paint.Cap.ROUND);
             mPaint.setStrokeJoin(Paint.Join.ROUND);
             setClickable(true);
