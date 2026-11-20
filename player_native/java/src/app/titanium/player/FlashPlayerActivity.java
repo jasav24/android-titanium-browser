@@ -508,7 +508,7 @@ public class FlashPlayerActivity extends Activity {
             float y = getHeight() / 2f;
             float width = getWidth();
             float pos = mDragging ? mDragTargetMs : mPosition;
-            float px = width * clamp(pos, 0, mDuration) / mDuration;
+            float px = width * clamp((long) pos, 0, mDuration) / mDuration;
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             paint.setStrokeCap(Paint.Cap.BUTT);
             // Measured from the reference frame (1672px wide, 408dpi device):
@@ -762,7 +762,8 @@ public class FlashPlayerActivity extends Activity {
         valueView.setTextSize(14);
         row.addView(valueView);
         IconView chevron = new IconView(this, "next");
-        chevron.setScale(0.55f);
+        chevron.setScaleX(0.55f);
+        chevron.setScaleY(0.55f);
         chevron.setClickable(false);
         row.addView(chevron, new LinearLayout.LayoutParams(dp(18), dp(18)));
         return row;
@@ -1080,7 +1081,7 @@ public class FlashPlayerActivity extends Activity {
                 return;
             }
             StringBuilder text = new StringBuilder();
-            for (androidx.media3.common.Cue cue : mPlayer.getCurrentCues().cues) {
+            for (androidx.media3.common.text.Cue cue : mPlayer.getCurrentCues().cues) {
                 if (cue.text == null) continue;
                 if (text.length() > 0) text.append('\n');
                 text.append(cue.text);

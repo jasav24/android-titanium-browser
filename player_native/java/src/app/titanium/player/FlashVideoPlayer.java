@@ -9,7 +9,7 @@ import android.widget.Toast;
 
 import org.chromium.base.Log;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 
