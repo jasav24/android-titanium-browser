@@ -2,8 +2,8 @@
   "schema_version": 1,
   "upstream": "jqssun/android-titanium-browser",
   "created_at": "2026-10-24T03:49:45Z",
-  "updated_at": "2026-11-17T04:15:56Z",
-  "last_scanned_sha": "bde250ae7c7d43a7a1827a44d07841132f6db7f4",
+  "updated_at": "2026-11-20T04:16:04Z",
+  "last_scanned_sha": "9b3a181e48d2223c6482c855d1845ba51b5d0321",
   "processed_shas": [
     "c21bc5ac921fd9da96c108b40afff202f6e8b0ba",
     "5e9070a98b48f6b6cb239bf90b8718b91795b7c5",
@@ -11,7 +11,9 @@
     "8516166ece02309125af6edc9fd80dde7470df05",
     "5c801971fcf6bf116bb846ed0f4d77a210c6232b",
     "e6bd75fbf00255be83f5a2901de97aa056506ef6",
-    "bde250ae7c7d43a7a1827a44d07841132f6db7f4"
+    "bde250ae7c7d43a7a1827a44d07841132f6db7f4",
+    "9fc8b178df2a71592e2ea0cd61e9818a359a9ff8",
+    "9b3a181e48d2223c6482c855d1845ba51b5d0321"
   ],
   "integrated_shas": [
     "5e9070a98b48f6b6cb239bf90b8718b91795b7c5",
@@ -49,12 +51,28 @@
       "reason": "Cherry-pick conflict in: vanadium",
       "risk": "high",
       "first_seen": "2026-11-17T04:15:56Z",
-      "protection": "candidate",
+      "report": null
+    },
+    {
+      "sha": "9fc8b178df2a71592e2ea0cd61e9818a359a9ff8",
+      "subject": "update",
+      "reason": "touches patch.sh sections: desktop: menu, unlabeled",
+      "risk": "high",
+      "first_seen": "2026-11-20T04:16:03Z",
+      "protection": "protected",
       "requires_build": true
     }
   ],
   "deferred": [],
-  "candidate": null,
+  "candidate": {
+    "target_sha": "9b3a181e48d2223c6482c855d1845ba51b5d0321",
+    "shas": [
+      "9b3a181e48d2223c6482c855d1845ba51b5d0321"
+    ],
+    "risk": "high",
+    "requires_full_build": true,
+    "created_at": "2026-11-20T04:16:04Z"
+  },
   "history": [
     {
       "at": "2026-10-24T03:49:45Z",
@@ -234,6 +252,19 @@
       "included": [],
       "pending": [
         "e6bd75fbf00255be83f5a2901de97aa056506ef6"
+      ],
+      "risk": "high"
+    },
+    {
+      "at": "2026-11-20T04:16:04Z",
+      "run_id": "44673249354",
+      "target_sha": "9b3a181e48d2223c6482c855d1845ba51b5d0321",
+      "result": "changes",
+      "included": [
+        "9b3a181e48d2223c6482c855d1845ba51b5d0321"
+      ],
+      "pending": [
+        "9fc8b178df2a71592e2ea0cd61e9818a359a9ff8"
       ],
       "risk": "high"
     }
