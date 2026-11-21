@@ -12,6 +12,7 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -55,6 +56,7 @@ public final class FlashVideoPlayer {
     private static String sLastAutoUrl;
     private static WeakReference<Activity> sActivityRef;
     private static WeakReference<Tab> sPollTab;
+    private static WeakReference<Tab> sWatchedTab;
     private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
     private static final long AUTO_MIN_AREA = 60_000;
 
@@ -81,27 +83,75 @@ public final class FlashVideoPlayer {
         sAttached = true;
         sActivityRef = new WeakReference<>((Activity) context);
         ChromeActivity activity = (ChromeActivity) context;
+        // TabModelObserver replaced the old onTabShown/onTabHidden pair: the model
+        // reports selection changes, the tab itself reports shown/hidden.
         activity.getTabModelSelector()
                 .getModel(false)
                 .addObserver(
-                        new TabObserver() {
+                        new TabModelObserver() {
                             @Override
-                            public void onShown(Tab tab) {
+                            public void didSelectTab(Tab tab, int type, int lastId) {
+                                watchTab(tab);
                                 startPolling(tab);
                             }
 
                             @Override
-                            public void onHidden(Tab tab) {
-                                if (sPollTab != null && sPollTab.get() == tab) {
-                                    sPollTab = null;
-                                    sMainHandler.removeCallbacks(sPollRunnable);
-                                }
+                            public void tabRemoved(Tab tab) {
+                                if (isPolledTab(tab)) stopPolling();
+                            }
+
+                            @Override
+                            public void onDestroy() {
+                                stopPolling();
+                                sAttached = false;
                             }
                         });
-        startPolling(activity.getActivityTab());
+        Tab tab = activity.getActivityTab();
+        watchTab(tab);
+        startPolling(tab);
     }
 
+    private static boolean isPolledTab(Tab tab) {
+        return tab != null && sPollTab != null && sPollTab.get() == tab;
+    }
+
+    private static void stopPolling() {
+        sPollTab = null;
+        sMainHandler.removeCallbacks(sPollRunnable);
+    }
+
+    // Keeps a TabObserver on the visible tab so a tab that stops being shown
+    // (window switch, new window) ends the polling loop.
+    private static void watchTab(Tab tab) {
+        Tab watched = sWatchedTab == null ? null : sWatchedTab.get();
+        if (watched == tab) return;
+        if (watched != null && !watched.isDestroyed()) {
+            watched.removeObserver(sTabObserver);
+        }
+        sWatchedTab = tab == null ? null : new WeakReference<>(tab);
+        if (tab != null && !tab.isDestroyed()) tab.addObserver(sTabObserver);
+    }
+
+    private static final TabObserver sTabObserver =
+            new TabObserver() {
+                @Override
+                public void onShown(Tab tab, int type) {
+                    startPolling(tab);
+                }
+
+                @Override
+                public void onHidden(Tab tab, int type) {
+                    if (isPolledTab(tab)) stopPolling();
+                }
+
+                @Override
+                public void onDestroyed(Tab tab) {
+                    if (isPolledTab(tab)) stopPolling();
+                }
+            };
+
     private static void startPolling(Tab tab) {
+        if (tab == null || tab.isDestroyed()) return;
         sPollTab = new WeakReference<>(tab);
         sMainHandler.removeCallbacks(sPollRunnable);
         sMainHandler.postDelayed(sPollRunnable, 1200);
